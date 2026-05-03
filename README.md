@@ -165,6 +165,8 @@ Commit messages should include:
 
 ## Roadmap
 
+See [CLI](CLI.md) for current command usage.
+
 See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) for the proposed Python CLI architecture, generated legislation layout, storage approach, and testing strategy.
 
 ### Phase 1: Source Discovery Prototype
@@ -198,7 +200,7 @@ Goal: fetch every enacted law discoverable from legislation.gov.uk up to the pre
 Output shape:
 
 ```text
-output/xml/enacted/{type}/{year}/{number}.xml
+output/xml/enacted/{type}/{year}/{number}/data.xml
 ```
 
 Plan:
@@ -218,7 +220,7 @@ Goal: fetch the full revised statute book as it stood on a chosen date.
 Output shape:
 
 ```text
-output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}.xml
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 ```
 
 Plan:

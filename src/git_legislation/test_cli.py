@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import httpx
 from typer.testing import CliRunner
 
+from fetchers.legislationdotgovdotuk import FetchManifest, FetchRecord
 from git_legislation.cli import app
 
 
@@ -32,7 +33,7 @@ def test_fetch_xml_command_fetches_and_writes_xml(monkeypatch, tmp_path: Path) -
         output_root: Path,
     ) -> Path:
         calls["write_args"] = (content, legislation_type, year, number, as_enacted, at, output_root)
-        return tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14.xml"
+        return tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14" / "data.xml"
 
     monkeypatch.setattr("git_legislation.cli.fetch_document_xml", fake_fetch_document_xml)
     monkeypatch.setattr("git_legislation.cli.write_document_xml", fake_write_document_xml)
@@ -50,7 +51,7 @@ def test_fetch_xml_command_fetches_and_writes_xml(monkeypatch, tmp_path: Path) -
         None,
         tmp_path,
     )
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/14.xml" in result.output
+    assert "xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml" in result.output
 
 
 def test_convert_xml_command_renders_and_writes_markdown(monkeypatch, tmp_path: Path) -> None:
@@ -116,63 +117,95 @@ def test_list_year_command_fetches_and_prints_document_refs(monkeypatch) -> None
 
 
 def test_fetch_year_command_fetches_and_writes_each_document(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {"fetch_documents": [], "writes": []}
+    calls: dict[str, object] = {}
 
-    def fake_fetch_year_feed(client: httpx.Client, legislation_type: str, year: int) -> bytes:
-        calls["fetch_year_args"] = (legislation_type, year)
-        return b"<feed>example</feed>"
-
-    def fake_parse_year_feed(feed: bytes) -> list[SimpleNamespace]:
-        calls["feed"] = feed
-        return [
-            SimpleNamespace(legislation_type="ukpga", year=2026, number=14, title="Act 14"),
-            SimpleNamespace(legislation_type="ukpga", year=2026, number=13, title="Act 13"),
-        ]
-
-    def fake_fetch_document_xml(
+    def fake_fetch_year_documents(
         client: httpx.Client,
         legislation_type: str,
         year: int,
-        number: int,
-        as_enacted: bool,
-        at: str | None,
-    ) -> bytes:
-        calls["fetch_documents"].append((legislation_type, year, number, as_enacted, at))
-        return f"<Legislation>{number}</Legislation>".encode()
-
-    def fake_write_document_xml(
-        content: bytes,
-        legislation_type: str,
-        year: int,
-        number: int,
         as_enacted: bool,
         at: str | None,
         output_root: Path,
-    ) -> Path:
-        calls["writes"].append((content, legislation_type, year, number, as_enacted, at, output_root))
-        return (
+    ) -> list[Path]:
+        calls["fetch_year_documents_args"] = (legislation_type, year, as_enacted, at, output_root)
+        return [
             output_root
             / "xml"
             / "point-in-time"
             / "2026-05-03"
             / legislation_type
             / str(year)
-            / f"{number}.xml"
-        )
+            / "14"
+            / "data.xml",
+            output_root
+            / "xml"
+            / "point-in-time"
+            / "2026-05-03"
+            / legislation_type
+            / str(year)
+            / "13"
+            / "data.xml",
+        ]
 
-    monkeypatch.setattr("git_legislation.cli.fetch_year_feed", fake_fetch_year_feed)
-    monkeypatch.setattr("git_legislation.cli.parse_year_feed", fake_parse_year_feed)
-    monkeypatch.setattr("git_legislation.cli.fetch_document_xml", fake_fetch_document_xml)
-    monkeypatch.setattr("git_legislation.cli.write_document_xml", fake_write_document_xml)
+    monkeypatch.setattr("git_legislation.cli.fetch_year_documents", fake_fetch_year_documents)
 
     result = CliRunner().invoke(app, ["fetch-year", "ukpga", "2026", "--output-root", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert calls["fetch_year_args"] == ("ukpga", 2026)
-    assert calls["fetch_documents"] == [("ukpga", 2026, 14, False, None), ("ukpga", 2026, 13, False, None)]
-    assert calls["writes"] == [
-        (b"<Legislation>14</Legislation>", "ukpga", 2026, 14, False, None, tmp_path),
-        (b"<Legislation>13</Legislation>", "ukpga", 2026, 13, False, None, tmp_path),
-    ]
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/14.xml" in result.output
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/13.xml" in result.output
+    assert calls["fetch_year_documents_args"] == ("ukpga", 2026, False, None, tmp_path)
+    assert "xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml" in result.output
+    assert "xml/point-in-time/2026-05-03/ukpga/2026/13/data.xml" in result.output
+
+
+def test_fetch_enacted_corpus_command_fetches_year_range(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_fetch_enacted_corpus(
+        client: httpx.Client,
+        legislation_type: str,
+        start_year: int,
+        end_year: int,
+        output_root: Path,
+    ) -> FetchManifest:
+        calls["fetch_enacted_corpus_args"] = (legislation_type, start_year, end_year, output_root)
+        return FetchManifest(
+            corpus="enacted",
+            legislation_type=legislation_type,
+            start_year=start_year,
+            end_year=end_year,
+            records=[
+                FetchRecord(
+                    status="fetched",
+                    legislation_type=legislation_type,
+                    year=2025,
+                    number=1,
+                    path=output_root / "xml" / "enacted" / legislation_type / "2025" / "1" / "data.xml",
+                ),
+                FetchRecord(
+                    status="fetched",
+                    legislation_type=legislation_type,
+                    year=2026,
+                    number=1,
+                    path=output_root / "xml" / "enacted" / legislation_type / "2026" / "1" / "data.xml",
+                ),
+            ],
+        )
+
+    def fake_write_fetch_manifest(manifest: FetchManifest, output_root: Path) -> Path:
+        calls["write_fetch_manifest_args"] = (manifest, output_root)
+        return output_root / "manifests" / "enacted" / "ukpga" / "2025-2026.json"
+
+    monkeypatch.setattr("git_legislation.cli.fetch_enacted_corpus", fake_fetch_enacted_corpus)
+    monkeypatch.setattr("git_legislation.cli.write_fetch_manifest", fake_write_fetch_manifest)
+
+    result = CliRunner().invoke(
+        app,
+        ["fetch-enacted-corpus", "ukpga", "2025", "--end-year", "2026", "--output-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["fetch_enacted_corpus_args"] == ("ukpga", 2025, 2026, tmp_path)
+    assert calls["write_fetch_manifest_args"][1] == tmp_path
+    assert "xml/enacted/ukpga/2025/1/data.xml" in result.output
+    assert "xml/enacted/ukpga/2026/1/data.xml" in result.output
+    assert "manifests/enacted/ukpga/2025-2026.json" in result.output

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -8,9 +9,12 @@ from fetchers.legislationdotgovdotuk import (
     DEFAULT_OUTPUT_ROOT,
     create_client,
     fetch_document_xml,
+    fetch_enacted_corpus,
+    fetch_year_documents,
     fetch_year_feed,
     parse_year_feed,
     write_document_xml,
+    write_fetch_manifest,
 )
 
 app = typer.Typer(no_args_is_help=True)
@@ -89,25 +93,39 @@ def fetch_year(
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
     with create_client() as client:
-        feed = fetch_year_feed(client, legislation_type=legislation_type, year=year)
-        documents = parse_year_feed(feed)
+        paths = fetch_year_documents(
+            client,
+            legislation_type=legislation_type,
+            year=year,
+            as_enacted=as_enacted,
+            at=at,
+            output_root=output_root,
+        )
 
-        for document in documents:
-            content = fetch_document_xml(
-                client,
-                legislation_type=document.legislation_type,
-                year=document.year,
-                number=document.number,
-                as_enacted=as_enacted,
-                at=at,
-            )
-            path = write_document_xml(
-                content,
-                legislation_type=document.legislation_type,
-                year=document.year,
-                number=document.number,
-                as_enacted=as_enacted,
-                at=at,
-                output_root=output_root,
-            )
-            typer.echo(path)
+    for path in paths:
+        typer.echo(path)
+
+
+@app.command("fetch-enacted-corpus")
+def fetch_enacted_corpus_command(
+    legislation_type: str,
+    start_year: int,
+    end_year: Annotated[
+        int | None,
+        typer.Option(help="Last year to fetch. Defaults to the current year."),
+    ] = None,
+    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    with create_client() as client:
+        manifest = fetch_enacted_corpus(
+            client,
+            legislation_type=legislation_type,
+            start_year=start_year,
+            end_year=end_year or date.today().year,
+            output_root=output_root,
+        )
+
+    for path in manifest.paths:
+        typer.echo(path)
+
+    typer.echo(write_fetch_manifest(manifest, output_root=output_root))

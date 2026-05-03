@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,58 @@ class DocumentRef:
     year: int
     number: int
     title: str
+
+
+@dataclass(frozen=True)
+class FetchRecord:
+    status: str
+    legislation_type: str
+    year: int
+    number: int | None = None
+    title: str | None = None
+    path: Path | None = None
+    url: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        record: dict[str, object] = {
+            "status": self.status,
+            "legislation_type": self.legislation_type,
+            "year": self.year,
+        }
+        if self.number is not None:
+            record["number"] = self.number
+        if self.title is not None:
+            record["title"] = self.title
+        if self.path is not None:
+            record["path"] = str(self.path)
+        if self.url is not None:
+            record["url"] = self.url
+        if self.error is not None:
+            record["error"] = self.error
+        return record
+
+
+@dataclass(frozen=True)
+class FetchManifest:
+    corpus: str
+    legislation_type: str
+    start_year: int
+    end_year: int
+    records: list[FetchRecord]
+
+    @property
+    def paths(self) -> list[Path]:
+        return [record.path for record in self.records if record.path is not None]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "corpus": self.corpus,
+            "legislation_type": self.legislation_type,
+            "start_year": self.start_year,
+            "end_year": self.end_year,
+            "records": [record.to_dict() for record in self.records],
+        }
 
 
 class FetchResponse:
@@ -149,6 +202,165 @@ def fetch_year_feed(client: httpx.Client, legislation_type: str, year: int) -> b
     return response.content
 
 
+def fetch_year_documents(
+    client: httpx.Client,
+    legislation_type: str,
+    year: int,
+    as_enacted: bool = False,
+    at: str | None = None,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> list[Path]:
+    return fetch_year_documents_manifest(
+        client,
+        legislation_type=legislation_type,
+        year=year,
+        as_enacted=as_enacted,
+        at=at,
+        output_root=output_root,
+    ).paths
+
+
+def fetch_year_documents_manifest(
+    client: httpx.Client,
+    legislation_type: str,
+    year: int,
+    as_enacted: bool = False,
+    at: str | None = None,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> FetchManifest:
+    try:
+        feed = fetch_year_feed(client, legislation_type=legislation_type, year=year)
+    except httpx.HTTPStatusError as error:
+        return FetchManifest(
+            corpus=_corpus_name(as_enacted=as_enacted, at=at),
+            legislation_type=legislation_type,
+            start_year=year,
+            end_year=year,
+            records=[
+                FetchRecord(
+                    status="missing-feed" if error.response.status_code == 404 else "failed-feed",
+                    legislation_type=legislation_type,
+                    year=year,
+                    url=year_feed_url(legislation_type=legislation_type, year=year),
+                    error=f"HTTP {error.response.status_code}",
+                )
+            ],
+        )
+
+    documents = parse_year_feed(feed)
+    records: list[FetchRecord] = []
+
+    for document in documents:
+        try:
+            content = fetch_document_xml(
+                client,
+                legislation_type=document.legislation_type,
+                year=document.year,
+                number=document.number,
+                as_enacted=as_enacted,
+                at=at,
+            )
+        except httpx.HTTPStatusError as error:
+            records.append(
+                FetchRecord(
+                    status="missing" if error.response.status_code == 404 else "failed",
+                    legislation_type=document.legislation_type,
+                    year=document.year,
+                    number=document.number,
+                    title=document.title,
+                    url=document_xml_url(
+                        legislation_type=document.legislation_type,
+                        year=document.year,
+                        number=document.number,
+                        as_enacted=as_enacted,
+                        at=at,
+                    ),
+                    error=f"HTTP {error.response.status_code}",
+                )
+            )
+            continue
+
+        path = write_document_xml(
+            content,
+            legislation_type=document.legislation_type,
+            year=document.year,
+            number=document.number,
+            as_enacted=as_enacted,
+            at=at,
+            output_root=output_root,
+        )
+        records.append(
+            FetchRecord(
+                status="fetched",
+                legislation_type=document.legislation_type,
+                year=document.year,
+                number=document.number,
+                title=document.title,
+                path=path,
+            )
+        )
+
+    return FetchManifest(
+        corpus=_corpus_name(as_enacted=as_enacted, at=at),
+        legislation_type=legislation_type,
+        start_year=year,
+        end_year=year,
+        records=records,
+    )
+
+
+def fetch_enacted_corpus(
+    client: httpx.Client,
+    legislation_type: str,
+    start_year: int,
+    end_year: int,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> FetchManifest:
+    if start_year > end_year:
+        raise ValueError("start_year must be before or equal to end_year.")
+
+    records: list[FetchRecord] = []
+    for year in range(start_year, end_year + 1):
+        records.extend(
+            fetch_year_documents_manifest(
+                client,
+                legislation_type=legislation_type,
+                year=year,
+                as_enacted=True,
+                output_root=output_root,
+            ).records
+        )
+
+    return FetchManifest(
+        corpus="enacted",
+        legislation_type=legislation_type,
+        start_year=start_year,
+        end_year=end_year,
+        records=records,
+    )
+
+
+def write_fetch_manifest(manifest: FetchManifest, output_root: Path = DEFAULT_OUTPUT_ROOT) -> Path:
+    path = (
+        output_root
+        / "manifests"
+        / manifest.corpus
+        / manifest.legislation_type
+        / f"{manifest.start_year}-{manifest.end_year}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def _corpus_name(as_enacted: bool, at: str | None) -> str:
+    if as_enacted:
+        return "enacted"
+    if at is not None:
+        return "point-in-time"
+    return "point-in-time"
+
+
 def write_document_xml(
     content: bytes,
     legislation_type: str,
@@ -161,7 +373,7 @@ def write_document_xml(
     if as_enacted and at is not None:
         raise ValueError("Cannot write enacted XML at a point in time.")
     if as_enacted:
-        path = output_root / "xml" / "enacted" / legislation_type / str(year) / f"{number}.xml"
+        path = output_root / "xml" / "enacted" / legislation_type / str(year) / str(number) / "data.xml"
     else:
         snapshot_date = at or date.today().isoformat()
         path = (
@@ -171,7 +383,8 @@ def write_document_xml(
             / snapshot_date
             / legislation_type
             / str(year)
-            / f"{number}.xml"
+            / str(number)
+            / "data.xml"
         )
 
     path.parent.mkdir(parents=True, exist_ok=True)
