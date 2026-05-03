@@ -112,6 +112,83 @@ Output XML:
 output/xml/enacted/{type}/{year}/{number}/data.xml
 ```
 
+Fetch report:
+
+```text
+output/reports/fetch/enacted/{type}/{start-year}-{end-year}.json
+```
+
+The report records fetched file paths and failures such as missing year feeds or unavailable XML.
+
+The command logs years where documents are found, failures, and occasional checkpoints for long empty ranges.
+
+### `fetch-point-in-time-corpus`
+
+Fetch point-in-time XML for the configured corpus as it stood on one snapshot date.
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus --at 2026-05-03
+```
+
+The CLI only takes the point-in-time date. The corpus scope is configured in code while we build this out incrementally; at this stage it starts with `ukpga`.
+
+This command is for targeted API fetching while we explore the source. The initial full corpus import should use Research Legislation bulk downloads.
+
+Output XML:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
+```
+
+Fetch report:
+
+```text
+output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
+```
+
+The report records fetched file paths and failures such as missing year feeds or unavailable dated XML.
+
+The command logs years where documents are found, failures, and occasional checkpoints for long empty ranges.
+
+### `download-bulk-enacted-xml`
+
+Download the Research Legislation enacted ePublished CLML archive.
+
+```bash
+uv run git-legislation download-bulk-enacted-xml
+```
+
+Current download URL:
+
+```text
+https://research.legislation.gov.uk/data/downloads/texts/enacted-epublished/xml/enacted-epublished-xml.zip
+```
+
+Output archive:
+
+```text
+output/bulk/research-legislation/texts/enacted-epublished/xml/enacted-epublished-xml.zip
+```
+
+This archive is large, currently listed by Research Legislation as 4.52 GB.
+
+If Research Legislation returns `401 Unauthorized`, the bulk download site is requiring access credentials. In that case, download the ZIP manually if you have access, then pass the local archive path to `seed-enacted-xml`.
+
+### `seed-enacted-xml`
+
+Seed enacted CLML XML from a downloaded Research Legislation archive into the converter input layout.
+
+```bash
+uv run git-legislation seed-enacted-xml \
+  output/bulk/research-legislation/texts/enacted-epublished/xml/enacted-epublished-xml.zip
+```
+
+Output XML:
+
+```text
+output/xml/enacted/{type}/{year}/{number}/data.xml
+```
+
 ### `convert-xml`
 
 Convert one CLML XML file to Markdown.
@@ -144,6 +221,13 @@ Point-in-time XML:
 output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 ```
 
+Fetch reports:
+
+```text
+output/reports/fetch/enacted/{type}/{start-year}-{end-year}.json
+output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
+```
+
 Markdown:
 
 ```text
@@ -153,5 +237,5 @@ output/markdown/enacted/{type}/{year}/{number}.md
 ## Current Caveats
 
 - The first complete path is focused on `ukpga`.
-- `fetch-year` and `fetch-enacted-corpus` print paths for files they write.
+- `fetch-year`, `fetch-enacted-corpus`, `fetch-point-in-time-corpus`, and `seed-enacted-xml` print paths for files they write.
 - Markdown conversion is still a prototype and does not yet handle the full CLML surface.

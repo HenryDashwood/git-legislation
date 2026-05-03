@@ -5,15 +5,19 @@ import httpx
 
 from fetchers.legislationdotgovdotuk import (
     DocumentRef,
+    FetchFailure,
+    FetchReport,
     create_client,
     document_xml_url,
     fetch_document_xml,
     fetch_enacted_corpus,
+    fetch_point_in_time_corpus,
     fetch_year_document_refs,
     fetch_year_documents,
     fetch_year_feed,
     parse_year_feed,
     write_document_xml,
+    write_fetch_report,
     year_feed_url,
 )
 
@@ -40,7 +44,10 @@ def test_document_xml_url_for_point_in_time_legislation() -> None:
 
 
 def test_year_feed_url_for_legislation_type_and_year() -> None:
-    assert year_feed_url(legislation_type="ukpga", year=2026) == "https://www.legislation.gov.uk/ukpga/2026/data.feed"
+    assert (
+        year_feed_url(legislation_type="ukpga", year=2026)
+        == "https://www.legislation.gov.uk/ukpga/2026/data.feed"
+    )
 
 
 def test_parse_year_feed_reads_document_entries() -> None:
@@ -182,8 +189,7 @@ class FixedDate(date):
 
 
 def test_write_document_xml_writes_current_xml_to_todays_point_in_time_folder(
-    monkeypatch,
-    tmp_path: Path,
+    monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.date", FixedDate)
 
@@ -231,9 +237,7 @@ def test_fetch_year_documents_fetches_and_writes_each_document(monkeypatch, tmp_
     calls: dict[str, object] = {"fetch_documents": [], "writes": []}
 
     def fake_fetch_year_document_refs(
-        client: httpx.Client,
-        legislation_type: str,
-        year: int,
+        client: httpx.Client, legislation_type: str, year: int
     ) -> list[DocumentRef]:
         calls["fetch_year_document_refs_args"] = (legislation_type, year)
         return [
@@ -265,18 +269,13 @@ def test_fetch_year_documents_fetches_and_writes_each_document(monkeypatch, tmp_
         return output_root / "xml" / "enacted" / legislation_type / str(year) / str(number) / "data.xml"
 
     monkeypatch.setattr(
-        "fetchers.legislationdotgovdotuk.fetch_year_document_refs",
-        fake_fetch_year_document_refs,
+        "fetchers.legislationdotgovdotuk.fetch_year_document_refs", fake_fetch_year_document_refs
     )
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_document_xml", fake_fetch_document_xml)
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.write_document_xml", fake_write_document_xml)
 
     paths = fetch_year_documents(
-        httpx.Client(),
-        legislation_type="ukpga",
-        year=2026,
-        as_enacted=True,
-        output_root=tmp_path,
+        httpx.Client(), legislation_type="ukpga", year=2026, as_enacted=True, output_root=tmp_path
     )
 
     assert calls["fetch_year_document_refs_args"] == ("ukpga", 2026)
@@ -305,24 +304,271 @@ def test_fetch_enacted_corpus_fetches_each_year_in_range(monkeypatch, tmp_path: 
         calls.append((legislation_type, year, as_enacted, at, output_root))
         return [output_root / "xml" / "enacted" / legislation_type / str(year) / "1" / "data.xml"]
 
-    monkeypatch.setattr(
-        "fetchers.legislationdotgovdotuk.fetch_year_documents",
-        fake_fetch_year_documents,
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    paths = fetch_enacted_corpus(
+        httpx.Client(), legislation_type="ukpga", start_year=2025, end_year=2026, output_root=tmp_path
     )
 
+    assert calls == [("ukpga", 2025, True, None, tmp_path), ("ukpga", 2026, True, None, tmp_path)]
+    assert paths == [
+        tmp_path / "xml" / "enacted" / "ukpga" / "2025" / "1" / "data.xml",
+        tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "1" / "data.xml",
+    ]
+
+
+def test_fetch_enacted_corpus_logs_year_progress(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        return [output_root / "xml" / "enacted" / legislation_type / str(year) / "1" / "data.xml"]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    fetch_enacted_corpus(
+        httpx.Client(),
+        legislation_type="ukpga",
+        start_year=2025,
+        end_year=2025,
+        output_root=tmp_path,
+        log=messages.append,
+    )
+
+    assert messages == [
+        "Fetched enacted ukpga 2025: 1 documents",
+    ]
+
+
+def test_fetch_enacted_corpus_does_not_log_empty_years(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        return []
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    fetch_enacted_corpus(
+        httpx.Client(),
+        legislation_type="ukpga",
+        start_year=2025,
+        end_year=2025,
+        output_root=tmp_path,
+        log=messages.append,
+    )
+
+    assert messages == []
+
+
+def test_fetch_enacted_corpus_logs_empty_year_checkpoints(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        return []
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    fetch_enacted_corpus(
+        httpx.Client(),
+        legislation_type="ukpga",
+        start_year=1900,
+        end_year=1999,
+        output_root=tmp_path,
+        log=messages.append,
+    )
+
+    assert messages == ["Checked enacted ukpga 1900-1999: no documents"]
+
+
+def test_fetch_enacted_corpus_report_records_year_failures(monkeypatch, tmp_path: Path) -> None:
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        if year == 2025:
+            raise httpx.HTTPStatusError(
+                "HTTP status 404",
+                request=httpx.Request("GET", "https://www.legislation.gov.uk/ukpga/2025/data.feed"),
+                response=httpx.Response(404),
+            )
+        return [output_root / "xml" / "enacted" / legislation_type / str(year) / "1" / "data.xml"]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    report = FetchReport.enacted_corpus(legislation_type="ukpga", start_year=2025, end_year=2026)
     paths = fetch_enacted_corpus(
         httpx.Client(),
         legislation_type="ukpga",
         start_year=2025,
         end_year=2026,
         output_root=tmp_path,
+        report=report,
+    )
+
+    assert paths == [tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "1" / "data.xml"]
+    assert report.fetched_paths == [tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "1" / "data.xml"]
+    assert report.failures == [
+        FetchFailure(
+            stage="year",
+            legislation_type="ukpga",
+            year=2025,
+            number=None,
+            url="https://www.legislation.gov.uk/ukpga/2025/data.feed",
+            status_code=404,
+            error="HTTP status 404",
+        )
+    ]
+
+
+def test_fetch_point_in_time_corpus_fetches_configured_corpus_to_snapshot_year(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, int, bool, str | None, Path]] = []
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS", {"ukpga": 2025})
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        calls.append((legislation_type, year, as_enacted, at, output_root))
+        return [
+            output_root
+            / "xml"
+            / "point-in-time"
+            / "2026-05-03"
+            / legislation_type
+            / str(year)
+            / "1"
+            / "data.xml"
+        ]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    paths = fetch_point_in_time_corpus(
+        httpx.Client(),
+        at="2026-05-03",
+        output_root=tmp_path,
     )
 
     assert calls == [
-        ("ukpga", 2025, True, None, tmp_path),
-        ("ukpga", 2026, True, None, tmp_path),
+        ("ukpga", 2025, False, "2026-05-03", tmp_path),
+        ("ukpga", 2026, False, "2026-05-03", tmp_path),
     ]
     assert paths == [
-        tmp_path / "xml" / "enacted" / "ukpga" / "2025" / "1" / "data.xml",
-        tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2025" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "1" / "data.xml",
     ]
+
+
+def test_fetch_point_in_time_corpus_logs_year_progress(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS", {"ukpga": 2026})
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        return [
+            output_root
+            / "xml"
+            / "point-in-time"
+            / "2026-05-03"
+            / legislation_type
+            / str(year)
+            / "1"
+            / "data.xml"
+        ]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    fetch_point_in_time_corpus(
+        httpx.Client(),
+        at="2026-05-03",
+        output_root=tmp_path,
+        log=messages.append,
+    )
+
+    assert messages == [
+        "Fetched point-in-time ukpga 2026 at 2026-05-03: 1 documents",
+    ]
+
+
+def test_fetch_point_in_time_corpus_logs_empty_year_checkpoints(monkeypatch, tmp_path: Path) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS", {"ukpga": 1900})
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+    ) -> list[Path]:
+        return []
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.date", FixedDate)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    fetch_point_in_time_corpus(
+        httpx.Client(),
+        at="1999-05-03",
+        output_root=tmp_path,
+        log=messages.append,
+    )
+
+    assert messages == ["Checked point-in-time ukpga 1900-1999 at 1999-05-03: no documents"]
+
+
+def test_write_fetch_report_writes_json_report(tmp_path: Path) -> None:
+    report = FetchReport.enacted_corpus(legislation_type="ukpga", start_year=2025, end_year=2026)
+    report.record_fetched(tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "1" / "data.xml")
+    report.record_failure(
+        FetchFailure(
+            stage="year",
+            legislation_type="ukpga",
+            year=2025,
+            number=None,
+            url="https://www.legislation.gov.uk/ukpga/2025/data.feed",
+            status_code=404,
+            error="HTTP status 404",
+        )
+    )
+
+    path = write_fetch_report(report, output_root=tmp_path)
+
+    assert path == tmp_path / "reports" / "fetch" / "enacted" / "ukpga" / "2025-2026.json"
+    assert '"mode": "enacted"' in path.read_text()
+    assert '"status_code": 404' in path.read_text()

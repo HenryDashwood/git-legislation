@@ -9,7 +9,7 @@ from converters.clmltomarkdown import (
     write_document_markdown,
 )
 
-SAMPLE_XML = Path("output/xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml")
+SAMPLE_XML = Path(__file__).parent / "fixtures" / "ukpga-2026-14.xml"
 
 
 def test_document_title_reads_metadata_title() -> None:
@@ -20,7 +20,7 @@ def test_document_metadata_reads_frontmatter_fields() -> None:
     metadata = document_metadata(SAMPLE_XML)
 
     assert metadata.title == "Industry and Exports (Financial Assistance) Act 2026"
-    assert metadata.document_uri == "http://www.legislation.gov.uk/ukpga/2026/14"
+    assert metadata.document_uri == "http://www.legislation.gov.uk/ukpga/2026/14/2026-05-03"
     assert metadata.status == "Prospective"
     assert metadata.extent == "E+W+S+N.I."
 

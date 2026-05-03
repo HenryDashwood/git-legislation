@@ -118,7 +118,7 @@ generated_from: "clml"
 
 Initial import:
 
-1. Prefer Research Legislation bulk downloads for the first corpus import.
+1. Use Research Legislation bulk downloads for the first corpus import.
 2. Use CLML where available.
 3. Fall back to plaintext for exploration only, not as the canonical long-term source.
 4. Record PDF-only items as metadata stubs until a PDF extraction strategy exists.
@@ -191,30 +191,31 @@ See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) 
 
 ### Phase 3: Corpus Fetching
 
-The next practical milestone is to move from one Act and one year to complete fetchable corpora.
+The next practical milestone is to move from one Act and one year to repeatable corpus imports.
 
-#### Phase 3a: Complete Enacted Corpus
+#### Phase 3a: Bulk Initial Corpus
 
-Goal: fetch every enacted law discoverable from legislation.gov.uk up to the present date.
+Goal: import the initial corpus from Research Legislation bulk downloads, using CLML as the canonical source where available.
 
 Output shape:
 
 ```text
 output/xml/enacted/{type}/{year}/{number}/data.xml
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 ```
 
 Plan:
 
-1. Keep `ukpga` as the first complete path.
-2. Add a supported legislation type registry from the official URI/type documentation.
-3. For each supported type, discover available documents by walking year feeds.
-4. Fetch each document from `/{type}/{year}/{number}/enacted/data.xml`.
-5. Treat missing XML as an expected outcome, not a crash.
-6. Measure runtime, storage size, and retry behaviour before widening the corpus.
+1. Identify the relevant Research Legislation bulk datasets.
+2. Download a small CLML bulk sample first.
+3. Unpack it into the same output layout used by the API fetcher.
+4. Preserve enough source metadata to trace files back to the bulk dataset and official legislation URI.
+5. Measure runtime, storage size, and directory shape before widening the corpus.
+6. Record missing/PDF-only/non-CLML items as expected coverage gaps rather than command failures.
 
-#### Phase 3b: Complete Point-In-Time Corpus
+#### Phase 3b: API Fetching For Exploration And Updates
 
-Goal: fetch the full revised statute book as it stood on a chosen date.
+Goal: keep the legislation.gov.uk API fetcher for targeted exploration, retries, and incremental update workflows.
 
 Output shape:
 
@@ -225,10 +226,10 @@ output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 Plan:
 
 1. Accept an explicit snapshot date.
-2. Discover all documents that existed by that date.
-3. Fetch each document from `/{type}/{year}/{number}/{yyyy-mm-dd}/data.xml`.
+2. Fetch targeted documents from `/{type}/{year}/{number}/{yyyy-mm-dd}/data.xml`.
+3. Use year feeds for bounded exploration, not the first full corpus import.
 4. Treat unavailable point-in-time XML as an expected outcome.
-5. Confirm that fetching today's moving `/data.xml` output and fetching an explicit dated snapshot produce the layout we expect.
+5. Reuse this path later when the Publication Log says a document was published or republished.
 
 ### Phase 4: Initial Markdown Corpus Import
 
