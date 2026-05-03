@@ -9,7 +9,7 @@ from converters.clmltomarkdown import (
     write_document_markdown,
 )
 
-SAMPLE_XML = Path("output/xml/consolidated/ukpga/2026/14/current.xml")
+SAMPLE_XML = Path("output/xml/point-in-time/2026-05-03/ukpga/2026/14.xml")
 
 
 def test_document_title_reads_metadata_title() -> None:

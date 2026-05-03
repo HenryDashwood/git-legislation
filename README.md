@@ -73,12 +73,14 @@ legislation/
       14/
         metadata.yml
         source/
-          current.xml
-        current/
-          introduction.md
-          section-1.md
-          section-2.md
-          schedule-1.md
+          point-in-time/
+            2026-05-03.xml
+        point-in-time/
+          2026-05-03/
+            introduction.md
+            section-1.md
+            section-2.md
+            schedule-1.md
         enacted/
           introduction.md
           section-1.md
@@ -93,7 +95,7 @@ Each Markdown file should be deterministic:
 - stable paragraph wrapping;
 - one numbered paragraph or subparagraph per line where possible;
 - source URI in frontmatter;
-- legislation type, year, number, version, extent, language, and source timestamp in metadata;
+- legislation type, year, number, snapshot date, extent, language, and source timestamp in metadata;
 - annotations and editorial notes represented consistently.
 
 Example frontmatter:
@@ -105,7 +107,7 @@ document_uri: "https://www.legislation.gov.uk/ukpga/2026/14"
 type: "ukpga"
 year: 2026
 number: 14
-version: "current"
+snapshot_date: "2026-05-03"
 extent: null
 language: "en"
 generated_from: "clml"
@@ -185,15 +187,58 @@ See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) 
 - Add snapshot tests using known legislation samples.
 - Generate provision-level files rather than whole-document blobs.
 
-### Phase 3: Initial Corpus Import
+### Phase 3: Corpus Fetching
 
-- Use Research Legislation bulk downloads where possible.
-- Convert a bounded corpus first, probably current revised primary legislation.
-- Commit generated output.
+The next practical milestone is to move from one Act and one year to complete fetchable corpora.
+
+#### Phase 3a: Complete Enacted Corpus
+
+Goal: fetch every enacted law discoverable from legislation.gov.uk up to the present date.
+
+Output shape:
+
+```text
+output/xml/enacted/{type}/{year}/{number}.xml
+```
+
+Plan:
+
+1. Keep `ukpga` as the first complete path.
+2. Add a supported legislation type registry from the official URI/type documentation.
+3. For each supported type, discover available documents by walking year feeds.
+4. Fetch each document from `/{type}/{year}/{number}/enacted/data.xml`.
+5. Treat missing XML as an expected outcome, not a crash.
+6. Write a manifest of fetched, skipped, missing, and failed documents.
+7. Measure runtime, storage size, and retry behaviour before widening the corpus.
+
+#### Phase 3b: Complete Point-In-Time Corpus
+
+Goal: fetch the full revised statute book as it stood on a chosen date.
+
+Output shape:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}.xml
+```
+
+Plan:
+
+1. Accept an explicit snapshot date.
+2. Discover all documents that existed by that date.
+3. Fetch each document from `/{type}/{year}/{number}/{yyyy-mm-dd}/data.xml`.
+4. Treat unavailable point-in-time XML as an expected outcome.
+5. Write a dated manifest of fetched, skipped, missing, and failed documents.
+6. Confirm that fetching today's moving `/data.xml` output and fetching an explicit dated snapshot produce the layout we expect.
+
+### Phase 4: Initial Markdown Corpus Import
+
+- Use the fetched XML corpus as canonical source input.
+- Convert a bounded corpus first, probably `ukpga`.
+- Commit generated Markdown output.
 - Measure repo size, conversion time, and diff readability.
 - Decide whether large source XML files belong in Git, Git LFS, or an external cache.
 
-### Phase 4: Incremental Updates
+### Phase 5: Incremental Updates
 
 - Poll `https://www.legislation.gov.uk/update/data.feed`.
 - Track the last processed Publication Log entry.
@@ -201,7 +246,32 @@ See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) 
 - Regenerate affected Markdown files.
 - Create import branches and commits automatically.
 
-### Phase 5: Pull Request Workflow
+### Phase 5a: Expand Corpus Scope
+
+The first working path is deliberately focused on UK Public General Acts (`ukpga`). The full corpus needs to expand across legislation.gov.uk type codes.
+
+Likely type codes include:
+
+- `uksi`: UK Statutory Instruments
+- `ukla`: UK Local Acts
+- `asp`: Acts of the Scottish Parliament
+- `ssi`: Scottish Statutory Instruments
+- `asc`: Acts of Senedd Cymru
+- `anaw`: Acts of the National Assembly for Wales
+- `wsi`: Welsh Statutory Instruments
+- `nia`: Northern Ireland Acts
+- `nisr`: Northern Ireland Statutory Rules
+- other legislation.gov.uk types as discovered from the official URI/type documentation
+
+Plan:
+
+1. Finish one complete list/fetch/convert path for `ukpga`.
+2. Add a supported-types registry.
+3. Test one representative year feed for each type.
+4. Add `list-types` and multi-type fetch commands.
+5. Expand output corpus type by type.
+
+### Phase 6: Pull Request Workflow
 
 - Generate PR descriptions with:
   - source links;
@@ -212,7 +282,7 @@ See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) 
 - Add CI checks for deterministic regeneration.
 - Fail CI when generated Markdown differs from committed Markdown.
 
-### Phase 6: Effects And Audit Trail
+### Phase 7: Effects And Audit Trail
 
 - Import changes/effects feeds.
 - Store effects as structured metadata.
