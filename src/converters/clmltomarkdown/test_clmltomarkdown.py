@@ -9,7 +9,7 @@ from converters.clmltomarkdown import (
     write_document_markdown,
 )
 
-SAMPLE_XML = Path("output/00_xml/ukpga/2026/14.xml")
+SAMPLE_XML = Path("output/xml/consolidated/ukpga/2026/14/current.xml")
 
 
 def test_document_title_reads_metadata_title() -> None:
@@ -81,5 +81,5 @@ def test_write_document_markdown_writes_to_the_markdown_output_folder(tmp_path: 
         output_root=tmp_path,
     )
 
-    assert path == tmp_path / "01_markdown" / "ukpga" / "2026" / "14.md"
+    assert path == tmp_path / "markdown" / "enacted" / "ukpga" / "2026" / "14.md"
     assert path.read_text() == markdown

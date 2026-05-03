@@ -72,7 +72,7 @@ def fetch_document_xml(client: httpx.Client, legislation_type: str, year: int, n
 def write_document_xml(
     content: bytes, legislation_type: str, year: int, number: int, output_root: Path = DEFAULT_OUTPUT_ROOT
 ) -> Path:
-    path = output_root / "00_xml" / legislation_type / str(year) / f"{number}.xml"
+    path = output_root / "xml" / "consolidated" / legislation_type / str(year) / str(number) / "current.xml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return path

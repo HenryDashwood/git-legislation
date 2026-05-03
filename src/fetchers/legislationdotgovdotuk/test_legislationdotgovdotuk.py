@@ -38,7 +38,7 @@ def test_create_client_sets_legislation_api_headers() -> None:
         assert client.headers["Accept"] == "application/xml"
 
 
-def test_write_document_xml_writes_to_the_xml_output_folder(tmp_path: Path) -> None:
+def test_write_document_xml_writes_current_consolidated_xml(tmp_path: Path) -> None:
     path = write_document_xml(
         b"<Legislation>example</Legislation>",
         legislation_type="ukpga",
@@ -47,5 +47,5 @@ def test_write_document_xml_writes_to_the_xml_output_folder(tmp_path: Path) -> N
         output_root=tmp_path,
     )
 
-    assert path == tmp_path / "00_xml" / "ukpga" / "2026" / "14.xml"
+    assert path == tmp_path / "xml" / "consolidated" / "ukpga" / "2026" / "14" / "current.xml"
     assert path.read_bytes() == b"<Legislation>example</Legislation>"

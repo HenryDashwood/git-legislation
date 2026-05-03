@@ -114,7 +114,7 @@ def render_document_markdown(xml_path: Path) -> str:
 def write_document_markdown(
     markdown: str, legislation_type: str, year: int, number: int, output_root: Path
 ) -> Path:
-    path = output_root / "01_markdown" / legislation_type / str(year) / f"{number}.md"
+    path = output_root / "markdown" / "enacted" / legislation_type / str(year) / f"{number}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown)
     return path
