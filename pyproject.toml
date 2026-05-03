@@ -1,0 +1,34 @@
+[project]
+name = "git-legislation"
+version = "0.1.0"
+description = "Represent legislation.gov.uk data as deterministic Markdown in Git."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.27.0",
+    "lxml>=5.2.0",
+    "pydantic>=2.7.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+]
+
+[project.scripts]
+git-legislation = "git_legislation.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.5.0",
+]
+
+[tool.ruff]
+line-length = 113
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["src"]
+pythonpath = ["src"]

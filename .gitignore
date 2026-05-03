@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local generated data and caches
+var/
+
+# Keep generated data directories present without committing bulk contents
+data/publication-log/*
+data/effects/*
+!data/publication-log/.gitkeep
+!data/effects/.gitkeep
