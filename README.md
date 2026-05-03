@@ -210,8 +210,7 @@ Plan:
 3. For each supported type, discover available documents by walking year feeds.
 4. Fetch each document from `/{type}/{year}/{number}/enacted/data.xml`.
 5. Treat missing XML as an expected outcome, not a crash.
-6. Write a manifest of fetched, skipped, missing, and failed documents.
-7. Measure runtime, storage size, and retry behaviour before widening the corpus.
+6. Measure runtime, storage size, and retry behaviour before widening the corpus.
 
 #### Phase 3b: Complete Point-In-Time Corpus
 
@@ -229,8 +228,7 @@ Plan:
 2. Discover all documents that existed by that date.
 3. Fetch each document from `/{type}/{year}/{number}/{yyyy-mm-dd}/data.xml`.
 4. Treat unavailable point-in-time XML as an expected outcome.
-5. Write a dated manifest of fetched, skipped, missing, and failed documents.
-6. Confirm that fetching today's moving `/data.xml` output and fetching an explicit dated snapshot produce the layout we expect.
+5. Confirm that fetching today's moving `/data.xml` output and fetching an explicit dated snapshot produce the layout we expect.
 
 ### Phase 4: Initial Markdown Corpus Import
 

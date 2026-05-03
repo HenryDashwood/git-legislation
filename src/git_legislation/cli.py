@@ -10,11 +10,9 @@ from fetchers.legislationdotgovdotuk import (
     create_client,
     fetch_document_xml,
     fetch_enacted_corpus,
+    fetch_year_document_refs,
     fetch_year_documents,
-    fetch_year_feed,
-    parse_year_feed,
     write_document_xml,
-    write_fetch_manifest,
 )
 
 app = typer.Typer(no_args_is_help=True)
@@ -78,9 +76,9 @@ def convert_xml(
 @app.command("list-year")
 def list_year(legislation_type: str, year: int) -> None:
     with create_client() as client:
-        feed = fetch_year_feed(client, legislation_type=legislation_type, year=year)
+        documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year)
 
-    for document in parse_year_feed(feed):
+    for document in documents:
         typer.echo(f"{document.legislation_type}/{document.year}/{document.number}  {document.title}")
 
 
@@ -117,7 +115,7 @@ def fetch_enacted_corpus_command(
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
     with create_client() as client:
-        manifest = fetch_enacted_corpus(
+        paths = fetch_enacted_corpus(
             client,
             legislation_type=legislation_type,
             start_year=start_year,
@@ -125,7 +123,5 @@ def fetch_enacted_corpus_command(
             output_root=output_root,
         )
 
-    for path in manifest.paths:
+    for path in paths:
         typer.echo(path)
-
-    typer.echo(write_fetch_manifest(manifest, output_root=output_root))

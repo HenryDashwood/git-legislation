@@ -112,14 +112,6 @@ Output XML:
 output/xml/enacted/{type}/{year}/{number}/data.xml
 ```
 
-It also writes a manifest:
-
-```text
-output/manifests/enacted/{type}/{start_year}-{end_year}.json
-```
-
-The manifest records fetched documents and expected missing or failed resources. This matters for historical corpus runs because not every discovered item is guaranteed to have fetchable CLML XML.
-
 ### `convert-xml`
 
 Convert one CLML XML file to Markdown.
@@ -152,12 +144,6 @@ Point-in-time XML:
 output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 ```
 
-Fetch manifests:
-
-```text
-output/manifests/{corpus}/{type}/{start_year}-{end_year}.json
-```
-
 Markdown:
 
 ```text
@@ -167,7 +153,5 @@ output/markdown/enacted/{type}/{year}/{number}.md
 ## Current Caveats
 
 - The first complete path is focused on `ukpga`.
-- `fetch-year` prints paths but does not currently write a manifest.
-- `fetch-enacted-corpus` writes a manifest.
-- Manifest paths are currently absolute local paths; for exportable generated repos, these should become paths relative to `output_root`.
+- `fetch-year` and `fetch-enacted-corpus` print paths for files they write.
 - Markdown conversion is still a prototype and does not yet handle the full CLML surface.
