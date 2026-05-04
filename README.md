@@ -38,6 +38,37 @@ Key findings:
 - Changes to legislation are exposed as “effects” feeds. These record affected legislation, affecting legislation, provisions, effect type, in-force dates, extent, and whether the effect has been applied.
 - The dataset is broad but not literally every UK law ever made. The docs say legislation.gov.uk publishes UK legislation from 1267 onwards and selected EU-origin legislation, while also noting that it does not record or publish all UK legislation.
 
+## Current State
+
+The repository now has a working Python CLI for the first end-to-end corpus path:
+
+1. Discover documents from legislation.gov.uk year feeds.
+2. Fetch current `data.xml` resources for UK Public General Acts (`ukpga`) into a dated snapshot folder.
+3. Resume idempotently by skipping valid XML files that already exist.
+4. Reject bad successful responses, such as HTML “Multiple Choices” pages saved as `.xml`.
+5. Record fetch reports, fetch failures, and fallback probes.
+6. Convert fetched CLML XML into Markdown.
+7. Convert metadata-only XML into Markdown stubs with PDF links, rather than treating those records as total failures.
+8. Continue after conversion failures and write conversion reports.
+
+The current working corpus path is:
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus
+uv run git-legislation convert-point-in-time-corpus --at YYYY-MM-DD
+```
+
+Default output is under:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/ukpga/
+output/markdown/point-in-time/{yyyy-mm-dd}/ukpga/
+output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
+output/reports/convert/point-in-time/{yyyy-mm-dd}/ukpga.json
+```
+
+This is not yet “every UK law in Markdown”. It is currently a current-date `ukpga` corpus, with full Markdown where CLML body text exists and metadata stubs where the source only exposes metadata and PDF alternatives.
+
 ## V1 Scope
 
 V1 should answer one practical question:
@@ -64,7 +95,36 @@ Out of scope for v1:
 
 ## Repository Model
 
-A likely file layout:
+The current prototype writes generated source XML, Markdown, and reports under `output/`:
+
+```text
+output/
+  xml/
+    point-in-time/
+      2026-05-04/
+        ukpga/
+          2026/
+            14/
+              data.xml
+          Geo3/
+            41/
+              52/
+                data.xml
+  markdown/
+    point-in-time/
+      2026-05-04/
+        ukpga/
+          2026/
+            14.md
+          Geo3/
+            41/
+              52.md
+  reports/
+    fetch/
+    convert/
+```
+
+The long-term generated legislation repository may use a more review-friendly provision-level layout:
 
 ```text
 legislation/
@@ -87,7 +147,7 @@ legislation/
           section-2.md
 ```
 
-The important design choice is to avoid one giant Markdown file per Act. Smaller provision-level files should create much clearer diffs when an amendment inserts, repeals, or substitutes a provision.
+The current converter still emits one Markdown file per document. The likely next design choice is to avoid one giant Markdown file per Act in the committed statute repository. Smaller provision-level files should create much clearer diffs when an amendment inserts, repeals, or substitutes a provision.
 
 Each Markdown file should be deterministic:
 
@@ -116,9 +176,17 @@ generated_from: "clml"
 
 ## Import Strategy
 
-Initial import:
+Current prototype import:
 
-1. Use Research Legislation bulk downloads for the first corpus import.
+1. Use legislation.gov.uk year feeds to discover `ukpga` documents.
+2. Fetch current `data.xml` resources into a dated point-in-time snapshot.
+3. Use CLML XML where available.
+4. Record metadata-only/PDF-linked items as Markdown stubs.
+5. Record HTML ambiguity pages, empty responses, and source gaps in fetch reports.
+
+Likely production initial import:
+
+1. Use Research Legislation bulk downloads for the first broad corpus import.
 2. Use CLML where available.
 3. Fall back to plaintext for exploration only, not as the canonical long-term source.
 4. Record PDF-only items as metadata stubs until a PDF extraction strategy exists.
@@ -169,31 +237,81 @@ See [CLI](CLI.md) for current command usage.
 
 See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) for the proposed Python CLI architecture, generated legislation layout, storage approach, and testing strategy.
 
-### Phase 1: Source Discovery Prototype
+### Done: Source Discovery And `ukpga` Prototype
 
-- Download a small sample set via Atom feeds.
-- Fetch CLML for representative legislation types:
-  - UK Public General Act (`ukpga`);
-  - UK Statutory Instrument (`uksi`);
-  - Scottish Act (`asp`);
-  - Welsh legislation (`asc`, `anaw`, `wsi`);
-  - Northern Ireland legislation (`nia`, `nisr`).
-- Catalogue CLML structures that need Markdown handling.
-- Decide which metadata is required in frontmatter.
+- Fetch targeted documents and year feeds from legislation.gov.uk.
+- Fetch current `ukpga` corpus snapshots into dated output folders.
+- Preserve regnal-year source paths such as `ukpga/Geo3/41/52`.
+- Write fetch reports with successes, failures, probes, and fallback classifications.
+- Make corpus fetching idempotent for valid local XML.
+- Reject HTML and malformed responses instead of writing them as XML.
+- Add timeout/retry behavior for transient network errors.
+- Convert a current `ukpga` snapshot to Markdown with conversion reports.
+- Convert metadata-only XML into Markdown stubs with PDF links.
 
-### Phase 2: CLML To Markdown Converter
+### Next: Coverage Audit
 
-- Build a deterministic converter from CLML to Markdown.
-- Preserve hierarchy: Parts, Chapters, sections, schedules, paragraphs, subparagraphs.
-- Normalize whitespace and line wrapping for stable diffs.
-- Add snapshot tests using known legislation samples.
-- Generate provision-level files rather than whole-document blobs.
+Goal: know exactly what the current corpus does and does not contain.
 
-### Phase 3: Corpus Fetching
+1. Add a report summary command for fetch and conversion reports.
+2. Count expected feed entries versus valid XML files versus Markdown files.
+3. Separate expected source limitations from true tool failures.
+4. Track metadata-only documents and PDF alternatives as first-class coverage categories.
+5. Detect empty, malformed, or HTML local files and offer a cleanup command.
+6. Produce a concise coverage table by legislation type, year, and source format.
 
-The next practical milestone is to move from one Act and one year to repeatable corpus imports.
+### Next: Expand Beyond `ukpga`
 
-#### Phase 3a: Bulk Initial Corpus
+Goal: generalize the corpus pipeline across legislation.gov.uk type codes.
+
+Likely type codes include:
+
+- `uksi`: UK Statutory Instruments
+- `ukla`: UK Local Acts
+- `ukppa`: UK Private and Personal Acts
+- `asp`: Acts of the Scottish Parliament
+- `ssi`: Scottish Statutory Instruments
+- `asc`: Acts of Senedd Cymru
+- `anaw`: Acts of the National Assembly for Wales
+- `wsi`: Welsh Statutory Instruments
+- `nia`: Northern Ireland Acts
+- `nisi`: Northern Ireland Orders in Council
+- `nisr`: Northern Ireland Statutory Rules
+- `ukcm`: Church Measures
+- `ukci`: Church Instruments
+- selected EU-origin legislation types where they fit the project scope
+
+Plan:
+
+1. Add a supported-types registry with start years, labels, and default corpus inclusion.
+2. Add CLI options to fetch and convert one type, selected types, or all supported types.
+3. Test representative year feeds for each type.
+4. Keep per-type fetch and conversion reports.
+5. Expand output corpus type by type, starting with the highest-value types.
+
+### Next: PDF-Only And Non-CLML Sources
+
+Goal: make records useful when legislation.gov.uk does not expose full CLML body text.
+
+1. Keep metadata stubs for PDF-only or metadata-only records.
+2. Store discovered PDF alternative URLs in reports and Markdown frontmatter.
+3. Add a PDF download/cache command.
+4. Evaluate PDF text extraction quality on representative historical documents.
+5. Decide whether extracted PDF text belongs in generated Markdown, sidecar files, or a separate review queue.
+6. Track provenance clearly so generated CLML Markdown and PDF-extracted Markdown are distinguishable.
+
+### Next: Better CLML To Markdown
+
+Goal: improve Markdown quality and diff readability.
+
+1. Preserve hierarchy: Parts, Chapters, sections, schedules, paragraphs, subparagraphs.
+2. Normalize whitespace and line wrapping for stable diffs.
+3. Expand handling for schedules, tables, images, forms, attachments, commentary, modifications, repeals, and prospective text.
+4. Add snapshot tests using known legislation samples from multiple types and eras.
+5. Generate provision-level files rather than whole-document blobs for the committed legislation repository.
+6. Make conversion idempotent so unchanged Markdown is not rewritten unnecessarily.
+
+### Next: Bulk Initial Corpus
 
 Goal: import the initial corpus from Research Legislation bulk downloads, using CLML as the canonical source where available.
 
@@ -213,7 +331,7 @@ Plan:
 5. Measure runtime, storage size, and directory shape before widening the corpus.
 6. Record missing/PDF-only/non-CLML items as expected coverage gaps rather than command failures.
 
-#### Phase 3b: API Fetching For Exploration And Updates
+### Next: API Fetching For Updates
 
 Goal: keep the legislation.gov.uk API fetcher for targeted exploration, retries, and incremental update workflows.
 
@@ -225,21 +343,21 @@ output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 
 Plan:
 
-1. Accept an explicit snapshot date.
-2. Fetch targeted documents from `/{type}/{year}/{number}/{yyyy-mm-dd}/data.xml`.
-3. Use year feeds for bounded exploration, not the first full corpus import.
+1. Keep current snapshot fetching as the main current-law API path.
+2. Keep explicit historical `--at` fetching as an exploratory path, not a completeness guarantee.
+3. Fetch targeted documents from `/{type}/{year}/{number}/data.xml` and source-path URLs.
 4. Treat unavailable point-in-time XML as an expected outcome.
 5. Reuse this path later when the Publication Log says a document was published or republished.
 
-### Phase 4: Initial Markdown Corpus Import
+### Later: Initial Markdown Corpus Import
 
 - Use the fetched XML corpus as canonical source input.
-- Convert a bounded corpus first, probably `ukpga`.
+- Convert a bounded corpus first, probably `ukpga` plus `uksi`.
 - Commit generated Markdown output.
 - Measure repo size, conversion time, and diff readability.
 - Decide whether large source XML files belong in Git, Git LFS, or an external cache.
 
-### Phase 5: Incremental Updates
+### Later: Incremental Updates
 
 - Poll `https://www.legislation.gov.uk/update/data.feed`.
 - Track the last processed Publication Log entry.
@@ -247,32 +365,7 @@ Plan:
 - Regenerate affected Markdown files.
 - Create import branches and commits automatically.
 
-### Phase 5a: Expand Corpus Scope
-
-The first working path is deliberately focused on UK Public General Acts (`ukpga`). The full corpus needs to expand across legislation.gov.uk type codes.
-
-Likely type codes include:
-
-- `uksi`: UK Statutory Instruments
-- `ukla`: UK Local Acts
-- `asp`: Acts of the Scottish Parliament
-- `ssi`: Scottish Statutory Instruments
-- `asc`: Acts of Senedd Cymru
-- `anaw`: Acts of the National Assembly for Wales
-- `wsi`: Welsh Statutory Instruments
-- `nia`: Northern Ireland Acts
-- `nisr`: Northern Ireland Statutory Rules
-- other legislation.gov.uk types as discovered from the official URI/type documentation
-
-Plan:
-
-1. Finish one complete list/fetch/convert path for `ukpga`.
-2. Add a supported-types registry.
-3. Test one representative year feed for each type.
-4. Add `list-types` and multi-type fetch commands.
-5. Expand output corpus type by type.
-
-### Phase 6: Pull Request Workflow
+### Later: Pull Request Workflow
 
 - Generate PR descriptions with:
   - source links;
@@ -283,7 +376,7 @@ Plan:
 - Add CI checks for deterministic regeneration.
 - Fail CI when generated Markdown differs from committed Markdown.
 
-### Phase 7: Effects And Audit Trail
+### Later: Effects And Audit Trail
 
 - Import changes/effects feeds.
 - Store effects as structured metadata.
@@ -306,10 +399,13 @@ This is harder because Bills often describe legal edits procedurally rather than
 
 - Should `main` mean “latest revised law” or “law as enacted”?
 - Should commencement determine when a change lands on `main`, or should Royal Assent be enough for v1?
-- Do we store all historical points in time, only current revised text, or both?
+- Do we store all historical points in time, only current revised text, or both? Current evidence suggests “complete law as it stands today” is much easier than “complete law at arbitrary historical dates”.
 - How should extent-specific versions be represented when England, Wales, Scotland, and Northern Ireland diverge?
 - Should generated Markdown include editorial annotations inline, in sidecar files, or both?
 - How much source XML should be committed versus cached?
+- Which legislation types are in scope for “UK law” in v1, especially EU-origin and devolved legislation?
+- How should PDF-extracted text be marked, reviewed, and updated?
+- Should metadata-only stubs be committed beside full-text Markdown, or separated into a coverage index?
 
 ## Current Assumption
 

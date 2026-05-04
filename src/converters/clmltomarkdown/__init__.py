@@ -5,8 +5,10 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 NAMESPACES = {
+    "atom": "http://www.w3.org/2005/Atom",
     "dc": "http://purl.org/dc/elements/1.1/",
     "leg": "http://www.legislation.gov.uk/namespaces/legislation",
+    "ukm": "http://www.legislation.gov.uk/namespaces/metadata",
 }
 CONVERSION_LOG_INTERVAL = 500
 
@@ -17,6 +19,7 @@ class DocumentMetadata:
     document_uri: str
     status: str | None
     extent: str | None
+    pdf_alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,24 +91,25 @@ def document_metadata(xml_path: Path) -> DocumentMetadata:
         document_uri=document_uri,
         status=root.attrib.get("Status"),
         extent=root.attrib.get("RestrictExtent"),
+        pdf_alternatives=_pdf_alternatives(root),
     )
 
 
 def document_prelims(xml_path: Path) -> DocumentPrelims:
     root = ElementTree.parse(xml_path).getroot()
-    title = root.findtext(".//leg:PrimaryPrelims/leg:Title", namespaces=NAMESPACES)
-    number = root.findtext(".//leg:PrimaryPrelims/leg:Number", namespaces=NAMESPACES)
+    title = root.findtext(".//leg:PrimaryPrelims/leg:Title", namespaces=NAMESPACES) or root.findtext(
+        ".//dc:title", namespaces=NAMESPACES
+    )
+    number = root.findtext(".//leg:PrimaryPrelims/leg:Number", namespaces=NAMESPACES) or _metadata_number(root)
     long_title_element = root.find(".//leg:PrimaryPrelims/leg:LongTitle", namespaces=NAMESPACES)
 
     if title is None:
-        raise ValueError(f"No prelims title found in {xml_path}")
-    if number is None:
-        raise ValueError(f"No prelims number found in {xml_path}")
-    if long_title_element is None:
-        raise ValueError(f"No long title found in {xml_path}")
+        raise ValueError(f"No document title found in {xml_path}")
 
     return DocumentPrelims(
-        title=title, number=number, long_title=" ".join("".join(long_title_element.itertext()).split())
+        title=title,
+        number=number or "",
+        long_title=_element_text(long_title_element) if long_title_element is not None else "",
     )
 
 
@@ -114,24 +118,15 @@ def document_sections(xml_path: Path) -> list[DocumentSection]:
     sections: list[DocumentSection] = []
 
     for group in root.findall(".//leg:Body/leg:P1group", namespaces=NAMESPACES):
-        title = group.findtext("leg:Title", namespaces=NAMESPACES)
+        title = group.findtext("leg:Title", namespaces=NAMESPACES) or ""
         number_element = group.find("leg:P1/leg:Pnumber", namespaces=NAMESPACES)
-
-        if title is None:
-            raise ValueError(f"Section without title found in {xml_path}")
-        if number_element is None:
-            raise ValueError(f"Section without number found in {xml_path}")
 
         sections.append(
             DocumentSection(
-                number=" ".join("".join(number_element.itertext()).split()),
+                number=_element_text(number_element) if number_element is not None else "",
                 title=" ".join(title.split()),
                 lines=_section_lines(group),
-                commentary_refs=[
-                    ref
-                    for commentary_ref in number_element.findall("leg:CommentaryRef", namespaces=NAMESPACES)
-                    if (ref := commentary_ref.attrib.get("Ref")) is not None
-                ],
+                commentary_refs=_commentary_refs(number_element),
             )
         )
 
@@ -160,10 +155,16 @@ def render_document_markdown(xml_path: Path) -> str:
     sections = document_sections(xml_path)
     commentaries = document_commentaries(xml_path)
 
-    blocks = [_frontmatter(metadata), f"# {prelims.title}", prelims.number, prelims.long_title]
+    blocks = [_frontmatter(metadata), f"# {prelims.title}"]
+    blocks.extend(block for block in [prelims.number, prelims.long_title] if block)
+
+    if not sections and not prelims.long_title:
+        blocks.append("Source XML contains metadata only; full text may be available in PDF or another source format.")
+        if metadata.pdf_alternatives:
+            blocks.append("\n".join(["PDF alternatives:", *[f"- {url}" for url in metadata.pdf_alternatives]]))
 
     for section in sections:
-        blocks.append(f"## {section.number} {section.title}")
+        blocks.append(_section_heading(section))
         blocks.extend(
             f"> Commentary: {commentaries[ref]}" for ref in section.commentary_refs if ref in commentaries
         )
@@ -316,6 +317,46 @@ def _section_lines(group: ElementTree.Element) -> list[str]:
     return _paragraph_lines(paragraph)
 
 
+def _section_heading(section: DocumentSection) -> str:
+    heading = " ".join(part for part in [section.number, section.title] if part)
+    return f"## {heading or 'Section'}"
+
+
+def _commentary_refs(element: ElementTree.Element | None) -> list[str]:
+    if element is None:
+        return []
+    return [
+        ref
+        for commentary_ref in element.findall("leg:CommentaryRef", namespaces=NAMESPACES)
+        if (ref := commentary_ref.attrib.get("Ref")) is not None
+    ]
+
+
+def _metadata_number(root: ElementTree.Element) -> str | None:
+    year = root.find(".//ukm:Year", namespaces=NAMESPACES)
+    number = root.find(".//ukm:Number", namespaces=NAMESPACES)
+    year_value = year.attrib.get("Value") if year is not None else None
+    number_value = number.attrib.get("Value") if number is not None else None
+    if year_value is None or number_value is None:
+        return None
+    return f"{year_value} Chapter {number_value}"
+
+
+def _pdf_alternatives(root: ElementTree.Element) -> tuple[str, ...]:
+    urls: list[str] = []
+
+    for link in root.findall(".//atom:link", namespaces=NAMESPACES):
+        if link.attrib.get("type") == "application/pdf" and (href := link.attrib.get("href")) is not None:
+            urls.append(href)
+
+    for alternative in root.findall(".//ukm:Alternative", namespaces=NAMESPACES):
+        uri = alternative.attrib.get("URI")
+        if uri is not None and uri.lower().endswith(".pdf"):
+            urls.append(uri)
+
+    return tuple(dict.fromkeys(urls))
+
+
 def _frontmatter(metadata: DocumentMetadata) -> str:
     lines = [
         "---",
@@ -326,6 +367,9 @@ def _frontmatter(metadata: DocumentMetadata) -> str:
         lines.append(f'status: "{_yaml_string(metadata.status)}"')
     if metadata.extent is not None:
         lines.append(f'extent: "{_yaml_string(metadata.extent)}"')
+    if metadata.pdf_alternatives:
+        lines.append("pdf_alternatives:")
+        lines.extend(f'  - "{_yaml_string(url)}"' for url in metadata.pdf_alternatives)
     lines.append("---")
     return "\n".join(lines)
 

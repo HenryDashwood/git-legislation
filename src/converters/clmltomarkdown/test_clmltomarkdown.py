@@ -16,6 +16,30 @@ from converters.clmltomarkdown import (
 )
 
 SAMPLE_XML = Path(__file__).parent / "fixtures" / "ukpga-2026-14.xml"
+METADATA_ONLY_XML = """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  DocumentURI="http://www.legislation.gov.uk/ukpga/1963/1/enacted">
+  <ukm:Metadata
+    xmlns:atom="http://www.w3.org/2005/Atom"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:ukm="http://www.legislation.gov.uk/namespaces/metadata">
+    <dc:title>Consolidated Fund Act 1963</dc:title>
+    <atom:link
+      rel="alternate"
+      href="http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf"
+      type="application/pdf"
+      title="Original PDF"/>
+    <ukm:PrimaryMetadata>
+      <ukm:Year Value="1963"/>
+      <ukm:Number Value="1"/>
+    </ukm:PrimaryMetadata>
+    <ukm:Alternatives>
+      <ukm:Alternative URI="http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf"/>
+    </ukm:Alternatives>
+  </ukm:Metadata>
+</Legislation>
+"""
 
 
 def test_document_title_reads_metadata_title() -> None:
@@ -29,6 +53,18 @@ def test_document_metadata_reads_frontmatter_fields() -> None:
     assert metadata.document_uri == "http://www.legislation.gov.uk/ukpga/2026/14/2026-05-03"
     assert metadata.status == "Prospective"
     assert metadata.extent == "E+W+S+N.I."
+    assert metadata.pdf_alternatives == ()
+
+
+def test_document_metadata_reads_pdf_alternatives(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(METADATA_ONLY_XML)
+
+    metadata = document_metadata(xml_path)
+
+    assert metadata.pdf_alternatives == (
+        "http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf",
+    )
 
 
 def test_document_prelims_reads_title_number_and_long_title() -> None:
@@ -50,6 +86,30 @@ def test_document_sections_reads_section_numbers_and_titles() -> None:
         ("2", "Financial assistance for exports and overseas investment: commitment limits"),
         ("3", "Extent, commencement and short title"),
     ]
+
+
+def test_document_sections_handles_unnumbered_p1groups(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(
+        """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Body>
+    <P1group>
+      <Title>Recital</Title>
+      <P>
+        <Text>Whereas this Act begins with an unnumbered recital.</Text>
+      </P>
+    </P1group>
+  </Body>
+</Legislation>
+"""
+    )
+
+    sections = document_sections(xml_path)
+
+    assert sections[0].number == ""
+    assert sections[0].title == "Recital"
+    assert sections[0].commentary_refs == []
 
 
 def test_document_sections_reads_commentary_refs() -> None:
@@ -94,6 +154,26 @@ def test_render_document_markdown_renders_prelims_and_sections() -> None:
     assert "## 1 Limit on selective financial assistance for industry" in markdown
     assert "> Commentary: S. 1 in force at 18.5.2026, see s. 3(2)" in markdown
     assert "(a) for “£12,000 million” substitute “£20 billion”;" in markdown
+
+
+def test_render_document_markdown_renders_metadata_only_xml(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(METADATA_ONLY_XML)
+
+    markdown = render_document_markdown(xml_path)
+
+    assert markdown.startswith(
+        "---\n"
+        'title: "Consolidated Fund Act 1963"\n'
+        'document_uri: "http://www.legislation.gov.uk/ukpga/1963/1/enacted"\n'
+        "pdf_alternatives:\n"
+        '  - "http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf"\n'
+        "---\n\n"
+        "# Consolidated Fund Act 1963\n\n"
+        "1963 Chapter 1\n\n"
+        "Source XML contains metadata only; full text may be available in PDF or another source format."
+    )
+    assert "- http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf" in markdown
 
 
 def test_markdown_output_target_from_xml_path_reads_enacted_source_path(tmp_path: Path) -> None:

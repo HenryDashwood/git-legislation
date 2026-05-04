@@ -260,6 +260,7 @@ def fetch_document_xml(
     )
     response = client.get(url)
     response.raise_for_status()
+    _ensure_legislation_xml(response.content, url)
     return response.content
 
 
@@ -272,6 +273,7 @@ def fetch_document_ref_xml(
     url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
     response = client.get(url)
     response.raise_for_status()
+    _ensure_legislation_xml(response.content, url)
     return response.content
 
 
@@ -371,9 +373,11 @@ def fetch_year_documents(
             output_root=output_root,
             source_path=document.path,
         )
-        if path.exists():
+        if _usable_existing_document_xml(path):
             paths.append(path)
             continue
+        if path.exists():
+            path.unlink()
 
         attempted_url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
         try:
@@ -698,6 +702,30 @@ def _failure_from_error(
         status_code=status_code,
         error=message,
     )
+
+
+def _ensure_legislation_xml(content: bytes, url: str) -> None:
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as error:
+        raise ValueError(f"Response from {url} is not parseable legislation XML: {error}") from error
+
+    if _local_name(root.tag) != "Legislation":
+        raise ValueError(f"Response from {url} is {_local_name(root.tag)!r}, not legislation XML")
+
+
+def _usable_existing_document_xml(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        root = ElementTree.parse(path).getroot()
+    except ElementTree.ParseError:
+        return False
+    return _local_name(root.tag) == "Legislation"
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _year_fetch_message(prefix: str, documents: int, failures: int) -> str:

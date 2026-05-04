@@ -97,6 +97,20 @@ def test_document_ref_xml_url_for_source_path_point_in_time_xml() -> None:
     )
 
 
+def test_fetch_document_xml_rejects_html_choice_pages() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html><head><title>Multiple Choices</title></head></html>")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    try:
+        fetch_document_xml(client, legislation_type="ukpga", year=1922, number=3)
+    except ValueError as error:
+        assert "not legislation XML" in str(error)
+    else:
+        raise AssertionError("Expected HTML response to be rejected")
+
+
 def test_year_feed_url_for_legislation_type_and_year() -> None:
     assert year_feed_url(legislation_type="ukpga", year=2026) == "https://www.legislation.gov.uk/ukpga/2026/data.feed"
 
@@ -633,6 +647,69 @@ def test_fetch_year_documents_skips_existing_xml(monkeypatch, tmp_path: Path) ->
     assert fetch_document_calls == []
     assert write_calls == []
     assert existing_path.read_bytes() == b"<Legislation>already here</Legislation>"
+
+
+def test_fetch_year_documents_refetches_invalid_existing_xml(monkeypatch, tmp_path: Path) -> None:
+    existing_path = tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14" / "data.xml"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(b"")
+
+    fetch_document_calls: list[DocumentRef] = []
+
+    def fake_fetch_year_document_refs(client: httpx.Client, legislation_type: str, year: int) -> list[DocumentRef]:
+        return [DocumentRef(legislation_type="ukpga", year=2026, number=14, title="Act 14")]
+
+    def fake_fetch_document_ref_xml(
+        client: httpx.Client, document: DocumentRef, as_enacted: bool = False, at: str | None = None
+    ) -> bytes:
+        fetch_document_calls.append(document)
+        return b"<Legislation>refetched</Legislation>"
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_document_refs", fake_fetch_year_document_refs)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_document_ref_xml", fake_fetch_document_ref_xml)
+
+    paths = fetch_year_documents(
+        httpx.Client(),
+        legislation_type="ukpga",
+        year=2026,
+        at="2026-05-03",
+        output_root=tmp_path,
+    )
+
+    assert paths == [existing_path]
+    assert fetch_document_calls == [DocumentRef(legislation_type="ukpga", year=2026, number=14, title="Act 14")]
+    assert existing_path.read_bytes() == b"<Legislation>refetched</Legislation>"
+
+
+def test_fetch_year_documents_removes_invalid_existing_xml_when_refetch_fails(monkeypatch, tmp_path: Path) -> None:
+    existing_path = tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14" / "data.xml"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(b"")
+
+    def fake_fetch_year_document_refs(client: httpx.Client, legislation_type: str, year: int) -> list[DocumentRef]:
+        return [DocumentRef(legislation_type="ukpga", year=2026, number=14, title="Act 14")]
+
+    def fake_fetch_document_ref_xml(
+        client: httpx.Client, document: DocumentRef, as_enacted: bool = False, at: str | None = None
+    ) -> bytes:
+        raise ValueError("empty response")
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_document_refs", fake_fetch_year_document_refs)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_document_ref_xml", fake_fetch_document_ref_xml)
+
+    report = FetchReport.point_in_time_corpus(at="2026-05-03")
+    paths = fetch_year_documents(
+        httpx.Client(),
+        legislation_type="ukpga",
+        year=2026,
+        at="2026-05-03",
+        output_root=tmp_path,
+        report=report,
+    )
+
+    assert paths == []
+    assert not existing_path.exists()
+    assert len(report.failures) == 1
 
 
 def test_fetch_year_documents_records_document_failures_and_continues(monkeypatch, tmp_path: Path) -> None:
