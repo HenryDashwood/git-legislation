@@ -243,6 +243,85 @@ def test_convert_point_in_time_corpus_command_converts_fetched_tree(monkeypatch,
     assert "reports/convert/point-in-time/2026-05-03/ukpga.json" in result.output
 
 
+def test_audit_point_in_time_coverage_command_prints_summary(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+    audit = SimpleNamespace(summary="audit")
+
+    def fake_audit_point_in_time_coverage(at: str, legislation_type: str, output_root: Path) -> object:
+        calls["audit_args"] = (at, legislation_type, output_root)
+        return audit
+
+    def fake_render_coverage_audit(rendered_audit: object) -> str:
+        calls["render_args"] = rendered_audit
+        return "Coverage audit for ukpga at 2026-05-03"
+
+    monkeypatch.setattr("git_legislation.cli.audit_point_in_time_coverage", fake_audit_point_in_time_coverage)
+    monkeypatch.setattr("git_legislation.cli.render_coverage_audit", fake_render_coverage_audit)
+
+    result = CliRunner().invoke(
+        app,
+        ["audit-point-in-time-coverage", "--at", "2026-05-03", "--output-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["audit_args"] == ("2026-05-03", "ukpga", tmp_path)
+    assert calls["render_args"] is audit
+    assert "Coverage audit for ukpga at 2026-05-03" in result.output
+
+
+def test_point_in_time_failures_command_prints_details(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_render_point_in_time_failure_details(at: str, legislation_type: str, output_root: Path) -> str:
+        calls["render_args"] = (at, legislation_type, output_root)
+        return "Failure details for ukpga at 2026-05-03"
+
+    monkeypatch.setattr(
+        "git_legislation.cli.render_point_in_time_failure_details",
+        fake_render_point_in_time_failure_details,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["point-in-time-failures", "--at", "2026-05-03", "--output-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["render_args"] == ("2026-05-03", "ukpga", tmp_path)
+    assert "Failure details for ukpga at 2026-05-03" in result.output
+
+
+def test_clean_point_in_time_xml_command_prints_cleanup_summary(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+    cleanup_result = SimpleNamespace()
+
+    def fake_clean_point_in_time_xml(
+        at: str,
+        legislation_type: str,
+        output_root: Path,
+        dry_run: bool,
+    ) -> object:
+        calls["clean_args"] = (at, legislation_type, output_root, dry_run)
+        return cleanup_result
+
+    def fake_render_cleanup_result(result: object) -> str:
+        calls["render_args"] = result
+        return "Would remove 1 local XML problem files"
+
+    monkeypatch.setattr("git_legislation.cli.clean_point_in_time_xml", fake_clean_point_in_time_xml)
+    monkeypatch.setattr("git_legislation.cli.render_cleanup_result", fake_render_cleanup_result)
+
+    result = CliRunner().invoke(
+        app,
+        ["clean-point-in-time-xml", "--at", "2026-05-03", "--dry-run", "--output-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["clean_args"] == ("2026-05-03", "ukpga", tmp_path, True)
+    assert calls["render_args"] is cleanup_result
+    assert "Would remove 1 local XML problem files" in result.output
+
+
 def test_list_year_command_fetches_and_prints_document_refs(monkeypatch) -> None:
     calls: dict[str, object] = {}
 

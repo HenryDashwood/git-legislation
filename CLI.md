@@ -394,6 +394,69 @@ output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
 
 The corpus converters log periodic checkpoints, continue after malformed or unsupported XML files, and write failures to the conversion report with the input path, inferred source path, and error message.
 
+### `audit-point-in-time-coverage`
+
+Summarize fetch, XML, Markdown, and conversion coverage for one snapshot date.
+
+```bash
+uv run git-legislation audit-point-in-time-coverage --at 2026-05-04
+```
+
+The legislation type defaults to `ukpga`. Override it with:
+
+```bash
+uv run git-legislation audit-point-in-time-coverage --at 2026-05-04 --legislation-type ukla
+```
+
+The audit reads:
+
+```text
+output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
+output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/**/data.xml
+output/markdown/point-in-time/{yyyy-mm-dd}/{type}/**/*.md
+```
+
+It reports expected documents from the fetch report, valid legislation XML, full-text XML, metadata-only XML, PDF-linked XML, local XML problems, Markdown file counts, conversion failures, and grouped failure categories.
+
+### `point-in-time-failures`
+
+Print the exact fetch and conversion failures for one snapshot date.
+
+```bash
+uv run git-legislation point-in-time-failures --at 2026-05-04
+```
+
+The legislation type defaults to `ukpga`. Override it with:
+
+```bash
+uv run git-legislation point-in-time-failures --at 2026-05-04 --legislation-type ukla
+```
+
+This reads the same fetch and conversion reports as `audit-point-in-time-coverage`, but expands the individual failed documents with their year/number, source path, URL, input path, and error message where available.
+
+### `clean-point-in-time-xml`
+
+Remove bad local XML files from one snapshot date. This only targets local `data.xml` files that are empty, malformed, or not legislation XML.
+
+Check what would be removed:
+
+```bash
+uv run git-legislation clean-point-in-time-xml --at 2026-05-04 --dry-run
+```
+
+Remove the bad local files:
+
+```bash
+uv run git-legislation clean-point-in-time-xml --at 2026-05-04
+```
+
+After cleanup, rerun the fetcher to retry those documents:
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus
+```
+
 ## Output Layout
 
 Enacted XML:

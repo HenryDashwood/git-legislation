@@ -11,6 +11,13 @@ from converters.clmltomarkdown import (
     convert_xml_tree,
     write_conversion_report,
 )
+from coverage_audit import (
+    audit_point_in_time_coverage,
+    clean_point_in_time_xml,
+    render_cleanup_result,
+    render_coverage_audit,
+    render_point_in_time_failure_details,
+)
 from fetchers.legislationdotgovdotuk import (
     DEFAULT_OUTPUT_ROOT,
     FetchReport,
@@ -141,6 +148,46 @@ def convert_point_in_time_corpus(
         f"Converted point-in-time {legislation_type} at {at}: {len(paths)} documents, {len(report.failures)} failures"
     )
     typer.echo(write_conversion_report(report, output_root=output_root))
+
+
+@app.command("audit-point-in-time-coverage")
+def audit_point_in_time_coverage_command(
+    at: Annotated[str, typer.Option("--at", help="Snapshot date to audit as YYYY-MM-DD.")],
+    legislation_type: Annotated[str, typer.Option(help="Legislation type to audit.")] = "ukpga",
+    output_root: Annotated[Path, typer.Option(help="Root folder for audit input.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    audit = audit_point_in_time_coverage(at=at, legislation_type=legislation_type, output_root=output_root)
+    typer.echo(render_coverage_audit(audit))
+
+
+@app.command("point-in-time-failures")
+def point_in_time_failures_command(
+    at: Annotated[str, typer.Option("--at", help="Snapshot date to inspect as YYYY-MM-DD.")],
+    legislation_type: Annotated[str, typer.Option(help="Legislation type to inspect.")] = "ukpga",
+    output_root: Annotated[Path, typer.Option(help="Root folder for report input.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    typer.echo(
+        render_point_in_time_failure_details(at=at, legislation_type=legislation_type, output_root=output_root)
+    )
+
+
+@app.command("clean-point-in-time-xml")
+def clean_point_in_time_xml_command(
+    at: Annotated[str, typer.Option("--at", help="Snapshot date to clean as YYYY-MM-DD.")],
+    legislation_type: Annotated[str, typer.Option(help="Legislation type to clean.")] = "ukpga",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List files that would be removed without deleting them."),
+    ] = False,
+    output_root: Annotated[Path, typer.Option(help="Root folder for cleanup input.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    result = clean_point_in_time_xml(
+        at=at,
+        legislation_type=legislation_type,
+        output_root=output_root,
+        dry_run=dry_run,
+    )
+    typer.echo(render_cleanup_result(result))
 
 
 @app.command("list-year")
