@@ -438,11 +438,12 @@ def test_fetch_point_in_time_corpus_command_fetches_configured_corpus(monkeypatc
     def fake_fetch_point_in_time_corpus(
         client: httpx.Client,
         at: str,
+        legislation_types: list[str] | None,
         output_root: Path,
         report: object,
         log: object,
     ) -> list[Path]:
-        calls["fetch_point_in_time_corpus_args"] = (at, output_root, report, log)
+        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
         return [
             output_root
             / "xml"
@@ -481,8 +482,8 @@ def test_fetch_point_in_time_corpus_command_fetches_configured_corpus(monkeypatc
     )
 
     assert result.exit_code == 0
-    at, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
-    assert (at, output_root) == ("2026-05-03", tmp_path)
+    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
+    assert (at, legislation_types, output_root) == ("2026-05-03", None, tmp_path)
     assert report.mode == "point-in-time"
     assert log is typer.echo
     assert calls["write_fetch_report_args"] == (report, tmp_path)
@@ -497,11 +498,12 @@ def test_fetch_point_in_time_corpus_command_defaults_to_todays_latest_snapshot(m
     def fake_fetch_point_in_time_corpus(
         client: httpx.Client,
         at: str | None,
+        legislation_types: list[str] | None,
         output_root: Path,
         report: object,
         log: object,
     ) -> list[Path]:
-        calls["fetch_point_in_time_corpus_args"] = (at, output_root, report, log)
+        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
         return [output_root / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "1" / "data.xml"]
 
     def fake_write_fetch_report(report: object, output_root: Path) -> Path:
@@ -522,13 +524,58 @@ def test_fetch_point_in_time_corpus_command_defaults_to_todays_latest_snapshot(m
     )
 
     assert result.exit_code == 0
-    at, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
-    assert (at, output_root) == (None, tmp_path)
+    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
+    assert (at, legislation_types, output_root) == (None, None, tmp_path)
     assert report.mode == "point-in-time"
     assert report.at == "2026-05-03"
     assert log is typer.echo
     assert calls["write_fetch_report_args"] == (report, tmp_path)
     assert "reports/fetch/point-in-time/2026-05-03.json" in result.output
+
+
+def test_fetch_point_in_time_corpus_command_accepts_legislation_type_options(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_fetch_point_in_time_corpus(
+        client: httpx.Client,
+        at: str | None,
+        legislation_types: list[str] | None,
+        output_root: Path,
+        report: object,
+        log: object,
+    ) -> list[Path]:
+        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
+        return []
+
+    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
+        calls["write_fetch_report_args"] = (report, output_root)
+        return output_root / "reports" / "fetch" / "point-in-time" / "2026-05-03.json"
+
+    monkeypatch.setattr("git_legislation.cli.fetch_point_in_time_corpus", fake_fetch_point_in_time_corpus)
+    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "fetch-point-in-time-corpus",
+            "--at",
+            "2026-05-03",
+            "--legislation-type",
+            "ukla",
+            "--legislation-type",
+            "uksi",
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
+    assert (at, legislation_types, output_root) == ("2026-05-03", ["ukla", "uksi"], tmp_path)
+    assert report.mode == "point-in-time"
+    assert report.at == "2026-05-03"
+    assert log is typer.echo
+    assert calls["write_fetch_report_args"] == (report, tmp_path)
 
 
 def test_probe_fetch_failures_command_updates_report(monkeypatch, tmp_path: Path) -> None:

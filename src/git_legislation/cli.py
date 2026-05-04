@@ -256,6 +256,13 @@ def fetch_point_in_time_corpus_command(
         str | None,
         typer.Option("--at", help="Snapshot date to fetch as YYYY-MM-DD. Defaults to today's latest/current XML."),
     ] = None,
+    legislation_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--legislation-type",
+            help="Legislation type to fetch. Repeat to fetch more than one. Defaults to every supported type.",
+        ),
+    ] = None,
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
     snapshot_date = at or date.today().isoformat()
@@ -264,6 +271,7 @@ def fetch_point_in_time_corpus_command(
         fetch_point_in_time_corpus(
             client,
             at=at,
+            legislation_types=legislation_types,
             output_root=output_root,
             report=report,
             log=typer.echo,

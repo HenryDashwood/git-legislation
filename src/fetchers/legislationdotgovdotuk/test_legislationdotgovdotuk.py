@@ -6,6 +6,8 @@ from urllib.error import HTTPError, URLError
 import httpx
 
 from fetchers.legislationdotgovdotuk import (
+    POINT_IN_TIME_CORPUS_START_YEARS,
+    SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES,
     DocumentRef,
     FetchFailure,
     FetchProbe,
@@ -28,7 +30,42 @@ from fetchers.legislationdotgovdotuk import (
     write_fetch_report,
     write_source_document_xml,
     year_feed_url,
+    year_number_range_feed_url,
 )
+
+
+def test_supported_point_in_time_legislation_types_cover_non_draft_api_types() -> None:
+    assert POINT_IN_TIME_CORPUS_START_YEARS == {
+        code: legislation_type.start_year
+        for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
+    }
+    assert set(SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES) == {
+        "aep",
+        "aosp",
+        "aip",
+        "apgb",
+        "gbppa",
+        "gbla",
+        "ukpga",
+        "ukla",
+        "ukppa",
+        "apni",
+        "ukcm",
+        "nisro",
+        "uksi",
+        "nisi",
+        "mnia",
+        "nisr",
+        "asp",
+        "ssi",
+        "wsi",
+        "nia",
+        "mwa",
+        "anaw",
+        "ukci",
+        "asc",
+        "ukmo",
+    }
 
 
 def test_document_xml_url_for_numbered_legislation() -> None:
@@ -113,6 +150,13 @@ def test_fetch_document_xml_rejects_html_choice_pages() -> None:
 
 def test_year_feed_url_for_legislation_type_and_year() -> None:
     assert year_feed_url(legislation_type="ukpga", year=2026) == "https://www.legislation.gov.uk/ukpga/2026/data.feed"
+
+
+def test_year_number_range_feed_url_for_legislation_type_year_and_number_range() -> None:
+    assert (
+        year_number_range_feed_url(legislation_type="ukla", year=1803, start_number=101, end_number=200)
+        == "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed"
+    )
 
 
 def test_parse_year_feed_reads_document_entries() -> None:
@@ -320,6 +364,105 @@ def test_fetch_year_document_refs_follows_next_feed_links() -> None:
     assert documents == [
         DocumentRef(legislation_type="ukpga", year=2020, number=2, title="Act 2", source_path=("ukpga", "2020", "2")),
         DocumentRef(legislation_type="ukpga", year=2020, number=1, title="Act 1", source_path=("ukpga", "2020", "1")),
+    ]
+
+
+def test_fetch_year_document_refs_splits_number_ranges_when_year_feed_is_too_broad() -> None:
+    requested_urls: list[str] = []
+    messages: list[str] = []
+
+    range_1 = b"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Local Act 100</title>
+        <link rel="alternate" href="http://www.legislation.gov.uk/ukla/1803/100"/>
+      </entry>
+      <entry>
+        <title>Local Act 1</title>
+        <link rel="alternate" href="http://www.legislation.gov.uk/ukla/1803/1"/>
+      </entry>
+    </feed>
+    """
+    range_2_page_1 = b"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <link rel="next" href="https://www.legislation.gov.uk/ukla/1803/101-200/data.feed?page=2"/>
+      <entry>
+        <title>Local Act 200</title>
+        <link rel="alternate" href="http://www.legislation.gov.uk/ukla/1803/200"/>
+      </entry>
+    </feed>
+    """
+    range_2_page_2 = b"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Local Act 101</title>
+        <link rel="alternate" href="http://www.legislation.gov.uk/ukla/1803/101"/>
+      </entry>
+    </feed>
+    """
+    empty_range = b"""<feed xmlns="http://www.w3.org/2005/Atom"/>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        if str(request.url) == "https://www.legislation.gov.uk/ukla/1803/data.feed":
+            return httpx.Response(436, content=b"too broad", request=request)
+        if str(request.url) == "https://www.legislation.gov.uk/ukla/1803/1-100/data.feed":
+            return httpx.Response(200, content=range_1)
+        if str(request.url) == "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed":
+            return httpx.Response(200, content=range_2_page_1)
+        if str(request.url) == "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed?page=2":
+            return httpx.Response(200, content=range_2_page_2)
+        if str(request.url) == "https://www.legislation.gov.uk/ukla/1803/201-300/data.feed":
+            return httpx.Response(200, content=empty_range)
+        return httpx.Response(404, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    documents = fetch_year_document_refs(client, legislation_type="ukla", year=1803, log=messages.append)
+
+    assert requested_urls == [
+        "https://www.legislation.gov.uk/ukla/1803/data.feed",
+        "https://www.legislation.gov.uk/ukla/1803/1-100/data.feed",
+        "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed",
+        "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed?page=2",
+        "https://www.legislation.gov.uk/ukla/1803/201-300/data.feed",
+    ]
+    assert documents == [
+        DocumentRef(
+            legislation_type="ukla",
+            year=1803,
+            number=100,
+            title="Local Act 100",
+            source_path=("ukla", "1803", "100"),
+        ),
+        DocumentRef(
+            legislation_type="ukla",
+            year=1803,
+            number=1,
+            title="Local Act 1",
+            source_path=("ukla", "1803", "1"),
+        ),
+        DocumentRef(
+            legislation_type="ukla",
+            year=1803,
+            number=200,
+            title="Local Act 200",
+            source_path=("ukla", "1803", "200"),
+        ),
+        DocumentRef(
+            legislation_type="ukla",
+            year=1803,
+            number=101,
+            title="Local Act 101",
+            source_path=("ukla", "1803", "101"),
+        ),
+    ]
+    assert messages == [
+        "Splitting ukla 1803 feed into 100-number ranges",
+        "Discovered 2 documents in ukla 1803 1-100: 2 year total",
+        "Read feed page 2: 2 documents discovered so far from "
+        "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed?page=2",
+        "Discovered 2 documents in ukla 1803 101-200: 4 year total",
     ]
 
 
@@ -816,6 +959,7 @@ def test_fetch_enacted_corpus_fetches_each_year_in_range(monkeypatch, tmp_path: 
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         calls.append((legislation_type, year, as_enacted, at, output_root))
         return [output_root / "xml" / "enacted" / legislation_type / str(year) / "1" / "data.xml"]
@@ -843,6 +987,7 @@ def test_fetch_enacted_corpus_logs_year_progress(monkeypatch, tmp_path: Path) ->
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return [output_root / "xml" / "enacted" / legislation_type / str(year) / "1" / "data.xml"]
 
@@ -870,6 +1015,7 @@ def test_fetch_enacted_corpus_does_not_log_empty_years(monkeypatch, tmp_path: Pa
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return []
 
@@ -897,6 +1043,7 @@ def test_fetch_enacted_corpus_logs_empty_year_checkpoints(monkeypatch, tmp_path:
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return []
 
@@ -924,6 +1071,7 @@ def test_fetch_enacted_corpus_resets_empty_year_checkpoints(monkeypatch, tmp_pat
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return []
 
@@ -953,6 +1101,7 @@ def test_fetch_enacted_corpus_report_records_year_failures(monkeypatch, tmp_path
         at: str | None = None,
         output_root: Path = tmp_path,
         report: FetchReport | None = None,
+        log: object = None,
     ) -> list[Path]:
         if year == 2025:
             raise httpx.HTTPStatusError(
@@ -986,7 +1135,10 @@ def test_fetch_enacted_corpus_report_records_year_failures(monkeypatch, tmp_path
 
 def test_fetch_point_in_time_corpus_fetches_configured_corpus_to_snapshot_year(monkeypatch, tmp_path: Path) -> None:
     calls: list[tuple[str, int, bool, str | None, Path]] = []
-    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS", {"ukpga": 2025})
+    monkeypatch.setattr(
+        "fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS",
+        {"ukpga": 2026, "uksi": 2025},
+    )
 
     def fake_fetch_year_documents(
         client: httpx.Client,
@@ -995,6 +1147,7 @@ def test_fetch_point_in_time_corpus_fetches_configured_corpus_to_snapshot_year(m
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         calls.append((legislation_type, year, as_enacted, at, output_root))
         return [output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "1" / "data.xml"]
@@ -1004,13 +1157,62 @@ def test_fetch_point_in_time_corpus_fetches_configured_corpus_to_snapshot_year(m
     paths = fetch_point_in_time_corpus(httpx.Client(), at="2026-05-03", output_root=tmp_path)
 
     assert calls == [
-        ("ukpga", 2025, False, "2026-05-03", tmp_path),
         ("ukpga", 2026, False, "2026-05-03", tmp_path),
+        ("uksi", 2025, False, "2026-05-03", tmp_path),
+        ("uksi", 2026, False, "2026-05-03", tmp_path),
     ]
     assert paths == [
-        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2025" / "1" / "data.xml",
         tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2025" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2026" / "1" / "data.xml",
     ]
+
+
+def test_fetch_point_in_time_corpus_fetches_requested_legislation_types(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, int, bool, str | None, Path]] = []
+    monkeypatch.setattr(
+        "fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS",
+        {"ukpga": 2026, "uksi": 2025},
+    )
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+        log: object = None,
+    ) -> list[Path]:
+        calls.append((legislation_type, year, as_enacted, at, output_root))
+        return [output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "1" / "data.xml"]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    paths = fetch_point_in_time_corpus(
+        httpx.Client(),
+        at="2026-05-03",
+        legislation_types=("uksi",),
+        output_root=tmp_path,
+    )
+
+    assert calls == [
+        ("uksi", 2025, False, "2026-05-03", tmp_path),
+        ("uksi", 2026, False, "2026-05-03", tmp_path),
+    ]
+    assert paths == [
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2025" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2026" / "1" / "data.xml",
+    ]
+
+
+def test_fetch_point_in_time_corpus_rejects_unknown_legislation_type() -> None:
+    try:
+        fetch_point_in_time_corpus(httpx.Client(), at="2026-05-03", legislation_types=("unknown",))
+    except ValueError as error:
+        assert "Unsupported point-in-time corpus legislation type(s): unknown" in str(error)
+    else:
+        raise AssertionError("Expected unsupported legislation type to be rejected")
 
 
 def test_fetch_point_in_time_corpus_without_date_fetches_latest_xml_to_todays_snapshot(
@@ -1027,6 +1229,7 @@ def test_fetch_point_in_time_corpus_without_date_fetches_latest_xml_to_todays_sn
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         calls.append((legislation_type, year, as_enacted, at, output_root))
         return [output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "1" / "data.xml"]
@@ -1050,6 +1253,7 @@ def test_fetch_point_in_time_corpus_logs_year_progress(monkeypatch, tmp_path: Pa
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return [output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "1" / "data.xml"]
 
@@ -1072,6 +1276,7 @@ def test_fetch_point_in_time_corpus_logs_year_document_failures(monkeypatch, tmp
         at: str | None = None,
         output_root: Path = tmp_path,
         report: FetchReport | None = None,
+        log: object = None,
     ) -> list[Path]:
         assert report is not None
         report.record_failure(
@@ -1111,6 +1316,7 @@ def test_fetch_point_in_time_corpus_logs_empty_year_checkpoints(monkeypatch, tmp
         as_enacted: bool = False,
         at: str | None = None,
         output_root: Path = tmp_path,
+        log: object = None,
     ) -> list[Path]:
         return []
 

@@ -13,16 +13,52 @@ from xml.etree import ElementTree
 
 import httpx
 
+
+@dataclass(frozen=True)
+class LegislationType:
+    code: str
+    label: str
+    start_year: int
+
+
 BASE_URL = "https://www.legislation.gov.uk"
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[3] / "output"
 USER_AGENT = "git-legislation/0.1"
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
 EMPTY_YEAR_LOG_INTERVAL = 100
+FEED_NUMBER_RANGE_SIZE = 100
 REQUEST_RETRY_DELAY_SECONDS = 1.0
 REQUEST_RETRIES = 2
 REQUEST_TIMEOUT_SECONDS = 30.0
+SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES = {
+    "aep": LegislationType("aep", "Acts of the English Parliament", 1267),
+    "aosp": LegislationType("aosp", "Acts of the Old Scottish Parliament", 1424),
+    "aip": LegislationType("aip", "Acts of the Old Irish Parliament", 1495),
+    "apgb": LegislationType("apgb", "Acts of the Parliament of Great Britain", 1707),
+    "gbppa": LegislationType("gbppa", "Private and Personal Acts of the Parliament of Great Britain", 1707),
+    "gbla": LegislationType("gbla", "Local Acts of the Parliament of Great Britain", 1797),
+    "ukpga": LegislationType("ukpga", "UK Public General Acts", 1801),
+    "ukla": LegislationType("ukla", "UK Local Acts", 1801),
+    "ukppa": LegislationType("ukppa", "UK Private and Personal Acts", 1801),
+    "apni": LegislationType("apni", "Acts of the Northern Ireland Parliament", 1921),
+    "ukcm": LegislationType("ukcm", "UK Church Measures", 1920),
+    "nisro": LegislationType("nisro", "Northern Ireland Statutory Rules and Orders", 1922),
+    "uksi": LegislationType("uksi", "UK Statutory Instruments", 1948),
+    "nisi": LegislationType("nisi", "Northern Ireland Orders in Council", 1972),
+    "mnia": LegislationType("mnia", "Measures of the Northern Ireland Assembly", 1974),
+    "nisr": LegislationType("nisr", "Northern Ireland Statutory Rules", 1991),
+    "asp": LegislationType("asp", "Acts of the Scottish Parliament", 1999),
+    "ssi": LegislationType("ssi", "Scottish Statutory Instruments", 1999),
+    "wsi": LegislationType("wsi", "Wales Statutory Instruments", 1999),
+    "nia": LegislationType("nia", "Acts of the Northern Ireland Assembly", 2000),
+    "mwa": LegislationType("mwa", "Measures of the Welsh Assembly", 2008),
+    "anaw": LegislationType("anaw", "Acts of the Welsh Assembly", 2012),
+    "ukci": LegislationType("ukci", "UK Church Instruments", 2013),
+    "asc": LegislationType("asc", "Acts of Senedd Cymru", 2020),
+    "ukmo": LegislationType("ukmo", "UK Ministerial Orders", 2020),
+}
 POINT_IN_TIME_CORPUS_START_YEARS = {
-    "ukpga": 1267,
+    code: legislation_type.start_year for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
 }
 
 
@@ -186,6 +222,10 @@ def year_feed_url(legislation_type: str, year: int) -> str:
     return f"{BASE_URL}/{legislation_type}/{year}/data.feed"
 
 
+def year_number_range_feed_url(legislation_type: str, year: int, start_number: int, end_number: int) -> str:
+    return f"{BASE_URL}/{legislation_type}/{year}/{start_number}-{end_number}/data.feed"
+
+
 def next_feed_url(feed: bytes) -> str | None:
     root = ElementTree.fromstring(feed)
     link = root.find(f"{{{ATOM_NAMESPACE}}}link[@rel='next']")
@@ -338,15 +378,85 @@ def fetch_year_feed(client: FetchClient, legislation_type: str, year: int) -> by
     return response.content
 
 
-def fetch_year_document_refs(client: FetchClient, legislation_type: str, year: int) -> list[DocumentRef]:
-    url: str | None = year_feed_url(legislation_type=legislation_type, year=year)
+def fetch_year_document_refs(
+    client: FetchClient,
+    legislation_type: str,
+    year: int,
+    log: Callable[[str], None] | None = None,
+) -> list[DocumentRef]:
+    try:
+        return _fetch_document_refs_from_feed(
+            client,
+            year_feed_url(legislation_type=legislation_type, year=year),
+            log=log,
+        )
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code != 436:
+            raise
+        _log(log, f"Splitting {legislation_type} {year} feed into {FEED_NUMBER_RANGE_SIZE}-number ranges")
+        return _fetch_year_document_refs_by_number_range(
+            client,
+            legislation_type=legislation_type,
+            year=year,
+            log=log,
+        )
+
+
+def _fetch_document_refs_from_feed(
+    client: FetchClient,
+    url: str,
+    log: Callable[[str], None] | None = None,
+) -> list[DocumentRef]:
     documents: list[DocumentRef] = []
+    page_count = 0
 
     while url is not None:
         response = client.get(url)
         response.raise_for_status()
-        documents.extend(parse_year_feed(response.content))
+        page_count += 1
+        page_documents = parse_year_feed(response.content)
+        documents.extend(page_documents)
+        if page_count > 1:
+            _log(log, f"Read feed page {page_count}: {len(documents)} documents discovered so far from {url}")
         url = next_feed_url(response.content)
+
+    return documents
+
+
+def _fetch_year_document_refs_by_number_range(
+    client: FetchClient,
+    legislation_type: str,
+    year: int,
+    log: Callable[[str], None] | None = None,
+) -> list[DocumentRef]:
+    documents: list[DocumentRef] = []
+    start_number = 1
+
+    while True:
+        end_number = start_number + FEED_NUMBER_RANGE_SIZE - 1
+        url = year_number_range_feed_url(
+            legislation_type=legislation_type,
+            year=year,
+            start_number=start_number,
+            end_number=end_number,
+        )
+        try:
+            range_documents = _fetch_document_refs_from_feed(client, url, log=log)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                break
+            raise
+
+        if not range_documents:
+            break
+
+        documents.extend(range_documents)
+        _log(
+            log,
+            f"Discovered {len(range_documents)} documents in {legislation_type} {year} "
+            f"{start_number}-{end_number}: {len(documents)} year total",
+        )
+        start_number = end_number + 1
 
     return documents
 
@@ -359,11 +469,15 @@ def fetch_year_documents(
     at: str | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     report: FetchReport | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> list[Path]:
-    documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year)
+    if log is None:
+        documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year)
+    else:
+        documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year, log=log)
     paths: list[Path] = []
 
-    for document in documents:
+    for index, document in enumerate(documents, start=1):
         path = document_xml_output_path(
             legislation_type=document.legislation_type,
             year=document.year,
@@ -414,6 +528,8 @@ def fetch_year_documents(
                 source_path=document.path,
             )
         )
+        if index % 500 == 0:
+            _log(log, f"Fetched {index} of {len(documents)} documents for {legislation_type} {year}")
 
     return paths
 
@@ -442,6 +558,7 @@ def fetch_enacted_corpus(
                     year=year,
                     as_enacted=True,
                     output_root=output_root,
+                    log=log,
                 )
             else:
                 year_paths = fetch_year_documents(
@@ -451,6 +568,7 @@ def fetch_enacted_corpus(
                     as_enacted=True,
                     output_root=output_root,
                     report=report,
+                    log=log,
                 )
         except Exception as error:
             if report is None:
@@ -492,13 +610,15 @@ def fetch_enacted_corpus(
 def fetch_point_in_time_corpus(
     client: FetchClient,
     at: str | None = None,
+    legislation_types: tuple[str, ...] | list[str] | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     report: FetchReport | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[Path]:
     snapshot_date = at or date.today().isoformat()
     paths: list[Path] = []
-    for legislation_type, start_year in POINT_IN_TIME_CORPUS_START_YEARS.items():
+    for legislation_type in _point_in_time_corpus_types(legislation_types):
+        start_year = POINT_IN_TIME_CORPUS_START_YEARS[legislation_type]
         empty_start_year: int | None = None
         for year in range(start_year, date.fromisoformat(snapshot_date).year + 1):
             try:
@@ -510,6 +630,7 @@ def fetch_point_in_time_corpus(
                         year=year,
                         at=at,
                         output_root=output_root,
+                        log=log,
                     )
                 else:
                     year_paths = fetch_year_documents(
@@ -519,6 +640,7 @@ def fetch_point_in_time_corpus(
                         at=at,
                         output_root=output_root,
                         report=report,
+                        log=log,
                     )
             except Exception as error:
                 if report is None:
@@ -557,6 +679,16 @@ def fetch_point_in_time_corpus(
             )
 
     return paths
+
+
+def _point_in_time_corpus_types(legislation_types: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    selected_types = (
+        tuple(POINT_IN_TIME_CORPUS_START_YEARS) if legislation_types is None else tuple(legislation_types)
+    )
+    unknown_types = sorted(set(selected_types) - set(POINT_IN_TIME_CORPUS_START_YEARS))
+    if unknown_types:
+        raise ValueError(f"Unsupported point-in-time corpus legislation type(s): {', '.join(unknown_types)}")
+    return selected_types
 
 
 def write_fetch_report(report: FetchReport, output_root: Path = DEFAULT_OUTPUT_ROOT) -> Path:

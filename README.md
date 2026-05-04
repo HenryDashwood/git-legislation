@@ -43,7 +43,7 @@ Key findings:
 The repository now has a working Python CLI for the first end-to-end corpus path:
 
 1. Discover documents from legislation.gov.uk year feeds.
-2. Fetch current `data.xml` resources for UK Public General Acts (`ukpga`) into a dated snapshot folder.
+2. Fetch current `data.xml` resources for configured legislation types into dated snapshot folders.
 3. Resume idempotently by skipping valid XML files that already exist.
 4. Reject bad successful responses, such as HTML “Multiple Choices” pages saved as `.xml`.
 5. Record fetch reports, fetch failures, and fallback probes.
@@ -58,16 +58,23 @@ uv run git-legislation fetch-point-in-time-corpus
 uv run git-legislation convert-point-in-time-corpus --at YYYY-MM-DD
 ```
 
+If no type is passed, the fetcher now fetches every supported type. Use `--legislation-type` to limit a run to one or more types:
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus --legislation-type ukla
+uv run git-legislation fetch-point-in-time-corpus --legislation-type ukpga --legislation-type asp --legislation-type uksi
+```
+
 Default output is under:
 
 ```text
-output/xml/point-in-time/{yyyy-mm-dd}/ukpga/
-output/markdown/point-in-time/{yyyy-mm-dd}/ukpga/
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/
+output/markdown/point-in-time/{yyyy-mm-dd}/{type}/
 output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
-output/reports/convert/point-in-time/{yyyy-mm-dd}/ukpga.json
+output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
 ```
 
-This is not yet “every UK law in Markdown”. It is currently a current-date `ukpga` corpus, with full Markdown where CLML body text exists and metadata stubs where the source only exposes metadata and PDF alternatives.
+This is not yet “every UK law in Markdown”. The most validated path is currently the current-date `ukpga` corpus, with full Markdown where CLML body text exists and metadata stubs where the source only exposes metadata and PDF alternatives. The fetcher now knows the official non-draft legislation.gov.uk type codes in scope for the project, but those types still need coverage audits and converter hardening.
 
 ## V1 Scope
 
@@ -249,56 +256,50 @@ See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) 
 - Convert a current `ukpga` snapshot to Markdown with conversion reports.
 - Convert metadata-only XML into Markdown stubs with PDF links.
 
-### Next: Coverage Audit
+### Done: Coverage Audit
 
-Goal: know exactly what the current corpus does and does not contain.
+- Add a report summary command for fetch and conversion reports.
+- Count expected feed entries versus valid XML files versus Markdown files.
+- Separate expected source limitations from true tool failures.
+- Track metadata-only documents and PDF alternatives as first-class coverage categories.
+- Detect empty, malformed, or HTML local files and offer a cleanup command.
+- Print detailed fetch and conversion failures for a snapshot.
 
-1. Add a report summary command for fetch and conversion reports.
-2. Count expected feed entries versus valid XML files versus Markdown files.
-3. Separate expected source limitations from true tool failures.
-4. Track metadata-only documents and PDF alternatives as first-class coverage categories.
-5. Detect empty, malformed, or HTML local files and offer a cleanup command.
-6. Produce a concise coverage table by legislation type, year, and source format.
-
-### Next: Expand Beyond `ukpga`
+### In Progress: Expand Beyond `ukpga`
 
 Goal: generalize the corpus pipeline across legislation.gov.uk type codes.
 
-Likely type codes include:
+Configured non-draft corpus types:
 
-- `uksi`: UK Statutory Instruments
-- `ukla`: UK Local Acts
-- `ukppa`: UK Private and Personal Acts
-- `asp`: Acts of the Scottish Parliament
-- `ssi`: Scottish Statutory Instruments
-- `asc`: Acts of Senedd Cymru
-- `anaw`: Acts of the National Assembly for Wales
-- `wsi`: Welsh Statutory Instruments
-- `nia`: Northern Ireland Acts
-- `nisi`: Northern Ireland Orders in Council
-- `nisr`: Northern Ireland Statutory Rules
-- `ukcm`: Church Measures
-- `ukci`: Church Instruments
-- selected EU-origin legislation types where they fit the project scope
+- pre-UK and historical primary types: `aep`, `aosp`, `aip`, `apgb`, `gbppa`, `gbla`
+- UK Parliament primary types: `ukpga`, `ukla`, `ukppa`
+- devolved and Northern Ireland primary types: `asp`, `mwa`, `anaw`, `asc`, `apni`, `mnia`, `nia`
+- secondary types: `uksi`, `ssi`, `wsi`, `nisr`, `nisro`, `nisi`, `ukcm`, `ukci`, `ukmo`
+- draft legislation types remain out of the default corpus because they are not enacted or made law
 
 Plan:
 
-1. Add a supported-types registry with start years, labels, and default corpus inclusion.
-2. Add CLI options to fetch and convert one type, selected types, or all supported types.
-3. Test representative year feeds for each type.
-4. Keep per-type fetch and conversion reports.
-5. Expand output corpus type by type, starting with the highest-value types.
+1. Test representative year feeds for each configured type.
+2. Add CLI options to convert, audit, clean, and inspect one type, selected types, or all supported types.
+3. Keep per-type conversion reports and decide whether fetch reports should split by type as the corpus widens.
+4. Expand output corpus type by type, starting with the highest-value types.
 
 ### Next: PDF-Only And Non-CLML Sources
 
 Goal: make records useful when legislation.gov.uk does not expose full CLML body text.
 
 1. Keep metadata stubs for PDF-only or metadata-only records.
-2. Store discovered PDF alternative URLs in reports and Markdown frontmatter.
-3. Add a PDF download/cache command.
-4. Evaluate PDF text extraction quality on representative historical documents.
-5. Decide whether extracted PDF text belongs in generated Markdown, sidecar files, or a separate review queue.
-6. Track provenance clearly so generated CLML Markdown and PDF-extracted Markdown are distinguishable.
+2. Extract richer metadata from `ukm:Metadata`, `ukm:PrimaryMetadata`, and `ukm:SecondaryMetadata`, including:
+   - document category, main type, and status;
+   - year and number;
+   - made date, laid date, coming-into-force date, and other lifecycle dates where present;
+   - subjects, publisher, modified date, source URI, and original identifier;
+   - PDF alternative URL, size, print flag, and alternative date.
+3. Store discovered PDF alternative URLs and extracted metadata in reports and Markdown frontmatter.
+4. Add a PDF download/cache command.
+5. Evaluate PDF text extraction quality on representative historical documents.
+6. Decide whether extracted PDF text belongs in generated Markdown, sidecar files, or a separate review queue.
+7. Track provenance clearly so generated CLML Markdown, metadata-only stubs, and PDF-extracted Markdown are distinguishable.
 
 ### Next: Better CLML To Markdown
 

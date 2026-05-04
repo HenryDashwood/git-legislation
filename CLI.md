@@ -168,9 +168,18 @@ The report records fetched file paths and failures such as missing year feeds or
 
 The command logs years where documents are found, failures, and occasional checkpoints for long empty ranges.
 
+If a year-level feed is too broad and legislation.gov.uk returns HTTP `436`, the fetcher automatically retries that year as number-range feeds such as:
+
+```text
+https://www.legislation.gov.uk/ukla/1803/1-100/data.feed
+https://www.legislation.gov.uk/ukla/1803/101-200/data.feed
+```
+
+For large or paginated years, the command also logs feed progress while it is still inside a year, including split range totals and every additional feed page read.
+
 ### `fetch-point-in-time-corpus`
 
-Fetch latest/current XML for the configured corpus and store it under today's snapshot date.
+Fetch latest/current XML for every supported corpus type and store it under today's snapshot date.
 
 ```bash
 uv run git-legislation fetch-point-in-time-corpus
@@ -184,6 +193,21 @@ output/xml/point-in-time/YYYY-MM-DD/{type}/{year}/{number}/data.xml
 
 This is the main path for building a corpus of legislation as it currently stands.
 
+Fetch just one legislation type with:
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus --legislation-type ukla
+```
+
+Fetch more than one type by repeating the option:
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus \
+  --legislation-type ukpga \
+  --legislation-type ukla \
+  --legislation-type uksi
+```
+
 The fetcher is idempotent at the document XML level. Reruns still request the year feeds so they can discover the document list, but they skip document XML URLs whose target `data.xml` file already exists in the output tree.
 
 You can still request an explicit historical date while exploring source coverage:
@@ -194,7 +218,39 @@ uv run git-legislation fetch-point-in-time-corpus --at 2026-05-03
 
 With `--at`, the command uses dated `/YYYY-MM-DD/data.xml` document URLs.
 
-The corpus scope is configured in code while we build this out incrementally; at this stage it starts with `ukpga`.
+Supported point-in-time corpus types currently include the official non-draft legislation.gov.uk type codes in scope for the project:
+
+```text
+aep    Acts of the English Parliament
+aosp   Acts of the Old Scottish Parliament
+aip    Acts of the Old Irish Parliament
+apgb   Acts of the Parliament of Great Britain
+gbppa  Private and Personal Acts of the Parliament of Great Britain
+gbla   Local Acts of the Parliament of Great Britain
+ukpga  UK Public General Acts
+ukla   UK Local Acts
+ukppa  UK Private and Personal Acts
+apni   Acts of the Northern Ireland Parliament
+ukcm   UK Church Measures
+nisro  Northern Ireland Statutory Rules and Orders
+uksi   UK Statutory Instruments
+nisi   Northern Ireland Orders in Council
+mnia   Measures of the Northern Ireland Assembly
+nisr   Northern Ireland Statutory Rules
+asp    Acts of the Scottish Parliament
+ssi    Scottish Statutory Instruments
+wsi    Wales Statutory Instruments
+nia    Acts of the Northern Ireland Assembly
+mwa    Measures of the Welsh Assembly
+anaw   Acts of the Welsh Assembly
+ukci   UK Church Instruments
+asc    Acts of Senedd Cymru
+ukmo   UK Ministerial Orders
+```
+
+Draft legislation types are intentionally not included in the default corpus because they are not enacted or made law. Each supported type has its own configured crawl start year.
+
+If no `--legislation-type` is passed, the command fetches every supported type.
 
 This command is for targeted API fetching while we explore the source. The initial full corpus import should use Research Legislation bulk downloads.
 
