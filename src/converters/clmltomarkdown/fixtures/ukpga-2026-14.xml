@@ -19,7 +19,7 @@
     <P1group>
       <Title>Limit on selective financial assistance for industry</Title>
       <P1>
-        <Pnumber>1</Pnumber>
+        <Pnumber><CommentaryRef Ref="key-section-1"/>1</Pnumber>
         <P1para>
           <Text>In section 8 of the Industrial Development Act 1982 (selective financial assistance: general powers), in subsection (5)—</Text>
           <P3>
@@ -56,4 +56,11 @@
       </P1>
     </P1group>
   </Body>
+  <Commentaries>
+    <Commentary Type="I" id="key-section-1">
+      <Para>
+        <Text>S. 1 in force at 18.5.2026, see <CitationSubRef>s. 3(2)</CitationSubRef></Text>
+      </Para>
+    </Commentary>
+  </Commentaries>
 </Legislation>

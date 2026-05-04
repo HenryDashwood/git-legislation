@@ -1,10 +1,13 @@
 import json
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from types import TracebackType
-from urllib.error import HTTPError
+from typing import Protocol
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
@@ -15,6 +18,9 @@ DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[3] / "output"
 USER_AGENT = "git-legislation/0.1"
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
 EMPTY_YEAR_LOG_INTERVAL = 100
+REQUEST_RETRY_DELAY_SECONDS = 1.0
+REQUEST_RETRIES = 2
+REQUEST_TIMEOUT_SECONDS = 30.0
 POINT_IN_TIME_CORPUS_START_YEARS = {
     "ukpga": 1267,
 }
@@ -26,6 +32,20 @@ class DocumentRef:
     year: int
     number: int
     title: str
+    source_path: tuple[str, ...] | None = None
+
+    @property
+    def path(self) -> tuple[str, ...]:
+        return self.source_path or (self.legislation_type, str(self.year), str(self.number))
+
+
+@dataclass(frozen=True)
+class FetchProbe:
+    label: str
+    url: str
+    status_code: int | None
+    error: str | None
+    pdf_alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -37,6 +57,19 @@ class FetchFailure:
     url: str | None
     status_code: int | None
     error: str
+    classification: str | None = None
+    probes: list[FetchProbe] = field(default_factory=list)
+
+
+class FetchResponseLike(Protocol):
+    status_code: int
+    content: bytes
+
+    def raise_for_status(self) -> object: ...
+
+
+class FetchClient(Protocol):
+    def get(self, url: str) -> FetchResponseLike: ...
 
 
 @dataclass
@@ -96,8 +129,15 @@ class FetchResponse:
 
 
 class LegislationClient:
-    def __init__(self, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        headers: dict[str, str] | None = None,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
+        retries: int = REQUEST_RETRIES,
+    ) -> None:
         self.headers = headers or {}
+        self.timeout = timeout
+        self.retries = retries
 
     def __enter__(self) -> "LegislationClient":
         return self
@@ -112,11 +152,18 @@ class LegislationClient:
 
     def get(self, url: str) -> FetchResponse:
         request = Request(url, headers=self.headers)
-        try:
-            with urlopen(request) as response:
-                return FetchResponse(response.status, response.read(), url)
-        except HTTPError as error:
-            return FetchResponse(error.code, error.read(), url)
+        for attempt in range(self.retries + 1):
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    return FetchResponse(response.status, response.read(), url)
+            except HTTPError as error:
+                return FetchResponse(error.code, error.read(), url)
+            except (TimeoutError, URLError, ConnectionResetError) as error:
+                if attempt == self.retries:
+                    raise error
+                time.sleep(REQUEST_RETRY_DELAY_SECONDS)
+
+        raise RuntimeError("unreachable")
 
 
 def document_xml_url(
@@ -170,12 +217,20 @@ def parse_year_feed(feed: bytes) -> list[DocumentRef]:
 
 
 def _document_ref_from_href(href: str, title: str) -> DocumentRef:
-    parts = href.rstrip("/").split("/")
+    parts = tuple(part for part in urlparse(href).path.strip("/").split("/") if part)
+    if parts and parts[0] == "id":
+        parts = parts[1:]
+
+    legislation_type = parts[0]
+    year = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    number = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+
     return DocumentRef(
-        legislation_type=parts[-3],
-        year=int(parts[-2]),
-        number=int(parts[-1]),
+        legislation_type=legislation_type,
+        year=year,
+        number=number,
         title=title,
+        source_path=parts,
     )
 
 
@@ -189,7 +244,7 @@ def create_client() -> LegislationClient:
 
 
 def fetch_document_xml(
-    client: httpx.Client,
+    client: FetchClient,
     legislation_type: str,
     year: int,
     number: int,
@@ -208,14 +263,80 @@ def fetch_document_xml(
     return response.content
 
 
-def fetch_year_feed(client: httpx.Client, legislation_type: str, year: int) -> bytes:
+def fetch_document_ref_xml(
+    client: FetchClient,
+    document: DocumentRef,
+    as_enacted: bool = False,
+    at: str | None = None,
+) -> bytes:
+    url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
+    response = client.get(url)
+    response.raise_for_status()
+    return response.content
+
+
+def document_ref_from_source_path(source_path: str) -> DocumentRef:
+    parts = tuple(part for part in source_path.strip("/").split("/") if part)
+    if len(parts) < 3:
+        raise ValueError("Source path must look like {type}/{year-or-era}/{number-or-regnal-year}/...")
+
+    legislation_type = parts[0]
+    year = int(parts[1]) if parts[1].isdigit() else 0
+    number = int(parts[2]) if len(parts) == 3 and parts[2].isdigit() else 0
+
+    return DocumentRef(
+        legislation_type=legislation_type,
+        year=year,
+        number=number,
+        title="",
+        source_path=parts,
+    )
+
+
+def document_ref_xml_url(document: DocumentRef, as_enacted: bool = False, at: str | None = None) -> str:
+    if as_enacted and at is not None:
+        raise ValueError("Cannot fetch enacted XML at a point in time.")
+
+    path = "/".join(document.path)
+    if as_enacted:
+        return f"{BASE_URL}/{path}/enacted/data.xml"
+    if at is not None:
+        return f"{BASE_URL}/{path}/{at}/data.xml"
+    return f"{BASE_URL}/{path}/data.xml"
+
+
+def write_source_document_xml(
+    content: bytes,
+    source_path: tuple[str, ...],
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    as_enacted: bool = False,
+    at: str | None = None,
+) -> Path:
+    if as_enacted and at is not None:
+        raise ValueError("Cannot write enacted XML at a point in time.")
+    if not source_path:
+        raise ValueError("Cannot write XML without a source path.")
+
+    if as_enacted:
+        path = output_root / "xml" / "enacted" / Path(*source_path) / "data.xml"
+    elif at is not None:
+        path = output_root / "xml" / "point-in-time" / at / Path(*source_path) / "data.xml"
+    else:
+        path = output_root / "xml" / "latest" / Path(*source_path) / "data.xml"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def fetch_year_feed(client: FetchClient, legislation_type: str, year: int) -> bytes:
     url = year_feed_url(legislation_type=legislation_type, year=year)
     response = client.get(url)
     response.raise_for_status()
     return response.content
 
 
-def fetch_year_document_refs(client: httpx.Client, legislation_type: str, year: int) -> list[DocumentRef]:
+def fetch_year_document_refs(client: FetchClient, legislation_type: str, year: int) -> list[DocumentRef]:
     url: str | None = year_feed_url(legislation_type=legislation_type, year=year)
     documents: list[DocumentRef] = []
 
@@ -229,41 +350,72 @@ def fetch_year_document_refs(client: httpx.Client, legislation_type: str, year: 
 
 
 def fetch_year_documents(
-    client: httpx.Client,
+    client: FetchClient,
     legislation_type: str,
     year: int,
     as_enacted: bool = False,
     at: str | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    report: FetchReport | None = None,
 ) -> list[Path]:
     documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year)
     paths: list[Path] = []
 
     for document in documents:
-        content = fetch_document_xml(
-            client,
-            legislation_type=document.legislation_type,
-            year=document.year,
-            number=document.number,
-            as_enacted=as_enacted,
-            at=at,
-        )
-        path = write_document_xml(
-            content,
+        path = document_xml_output_path(
             legislation_type=document.legislation_type,
             year=document.year,
             number=document.number,
             as_enacted=as_enacted,
             at=at,
             output_root=output_root,
+            source_path=document.path,
         )
-        paths.append(path)
+        if path.exists():
+            paths.append(path)
+            continue
+
+        attempted_url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
+        try:
+            content = fetch_document_ref_xml(
+                client,
+                document=document,
+                as_enacted=as_enacted,
+                at=at,
+            )
+        except Exception as error:
+            if report is None:
+                raise
+            report.record_failure(
+                _failure_from_error(
+                    error,
+                    stage="document",
+                    legislation_type=document.legislation_type,
+                    year=year,
+                    number=document.number,
+                    url=attempted_url,
+                )
+            )
+            continue
+
+        paths.append(
+            write_document_xml(
+                content,
+                legislation_type=document.legislation_type,
+                year=document.year,
+                number=document.number,
+                as_enacted=as_enacted,
+                at=at,
+                output_root=output_root,
+                source_path=document.path,
+            )
+        )
 
     return paths
 
 
 def fetch_enacted_corpus(
-    client: httpx.Client,
+    client: FetchClient,
     legislation_type: str,
     start_year: int,
     end_year: int,
@@ -278,13 +430,24 @@ def fetch_enacted_corpus(
     empty_start_year: int | None = None
     for year in range(start_year, end_year + 1):
         try:
-            year_paths = fetch_year_documents(
-                client,
-                legislation_type=legislation_type,
-                year=year,
-                as_enacted=True,
-                output_root=output_root,
-            )
+            failure_count_before = len(report.failures) if report is not None else 0
+            if report is None:
+                year_paths = fetch_year_documents(
+                    client,
+                    legislation_type=legislation_type,
+                    year=year,
+                    as_enacted=True,
+                    output_root=output_root,
+                )
+            else:
+                year_paths = fetch_year_documents(
+                    client,
+                    legislation_type=legislation_type,
+                    year=year,
+                    as_enacted=True,
+                    output_root=output_root,
+                    report=report,
+                )
         except Exception as error:
             if report is None:
                 raise
@@ -295,7 +458,8 @@ def fetch_enacted_corpus(
             _log(log, f"Failed enacted {legislation_type} {year}: {error}")
             continue
 
-        if not year_paths:
+        year_failures = len(report.failures) - failure_count_before if report is not None else 0
+        if not year_paths and not year_failures:
             empty_start_year = _log_empty_year_checkpoint(
                 log,
                 empty_start_year=empty_start_year,
@@ -309,30 +473,49 @@ def fetch_enacted_corpus(
         if report is not None:
             for path in year_paths:
                 report.record_fetched(path)
-        _log(log, f"Fetched enacted {legislation_type} {year}: {len(year_paths)} documents")
+        _log(
+            log,
+            _year_fetch_message(
+                prefix=f"Fetched enacted {legislation_type} {year}",
+                documents=len(year_paths),
+                failures=year_failures,
+            ),
+        )
 
     return paths
 
 
 def fetch_point_in_time_corpus(
-    client: httpx.Client,
-    at: str,
+    client: FetchClient,
+    at: str | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     report: FetchReport | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[Path]:
+    snapshot_date = at or date.today().isoformat()
     paths: list[Path] = []
     for legislation_type, start_year in POINT_IN_TIME_CORPUS_START_YEARS.items():
         empty_start_year: int | None = None
-        for year in range(start_year, date.fromisoformat(at).year + 1):
+        for year in range(start_year, date.fromisoformat(snapshot_date).year + 1):
             try:
-                year_paths = fetch_year_documents(
-                    client,
-                    legislation_type=legislation_type,
-                    year=year,
-                    at=at,
-                    output_root=output_root,
-                )
+                failure_count_before = len(report.failures) if report is not None else 0
+                if report is None:
+                    year_paths = fetch_year_documents(
+                        client,
+                        legislation_type=legislation_type,
+                        year=year,
+                        at=at,
+                        output_root=output_root,
+                    )
+                else:
+                    year_paths = fetch_year_documents(
+                        client,
+                        legislation_type=legislation_type,
+                        year=year,
+                        at=at,
+                        output_root=output_root,
+                        report=report,
+                    )
             except Exception as error:
                 if report is None:
                     raise
@@ -340,16 +523,17 @@ def fetch_point_in_time_corpus(
                     _failure_from_error(error, stage="year", legislation_type=legislation_type, year=year)
                 )
                 empty_start_year = None
-                _log(log, f"Failed point-in-time {legislation_type} {year} at {at}: {error}")
+                _log(log, f"Failed point-in-time {legislation_type} {year} at {snapshot_date}: {error}")
                 continue
 
-            if not year_paths:
+            year_failures = len(report.failures) - failure_count_before if report is not None else 0
+            if not year_paths and not year_failures:
                 empty_start_year = _log_empty_year_checkpoint(
                     log,
                     empty_start_year=empty_start_year,
                     year=year,
                     message=lambda start, current, legislation_type=legislation_type: (
-                        f"Checked point-in-time {legislation_type} {start}-{current} at {at}: no documents"
+                        f"Checked point-in-time {legislation_type} {start}-{current} at {snapshot_date}: no documents"
                     ),
                 )
                 continue
@@ -359,7 +543,14 @@ def fetch_point_in_time_corpus(
             if report is not None:
                 for path in year_paths:
                     report.record_fetched(path)
-            _log(log, f"Fetched point-in-time {legislation_type} {year} at {at}: {len(year_paths)} documents")
+            _log(
+                log,
+                _year_fetch_message(
+                    prefix=f"Fetched point-in-time {legislation_type} {year} at {snapshot_date}",
+                    documents=len(year_paths),
+                    failures=year_failures,
+                ),
+            )
 
     return paths
 
@@ -388,6 +579,67 @@ def write_fetch_report(report: FetchReport, output_root: Path = DEFAULT_OUTPUT_R
     return path
 
 
+def read_fetch_report(path: Path) -> FetchReport:
+    data = json.loads(path.read_text())
+    return FetchReport(
+        mode=data["mode"],
+        legislation_type=data["legislation_type"],
+        start_year=data["start_year"],
+        end_year=data["end_year"],
+        at=data["at"],
+        fetched_paths=[Path(fetched_path) for fetched_path in data["fetched"]],
+        failures=[
+            FetchFailure(
+                stage=failure["stage"],
+                legislation_type=failure["legislation_type"],
+                year=failure["year"],
+                number=failure["number"],
+                url=failure["url"],
+                status_code=failure["status_code"],
+                error=failure["error"],
+                classification=failure.get("classification"),
+                probes=[
+                    FetchProbe(
+                        label=probe["label"],
+                        url=probe["url"],
+                        status_code=probe["status_code"],
+                        error=probe["error"],
+                        pdf_alternatives=tuple(probe.get("pdf_alternatives", [])),
+                    )
+                    for probe in failure.get("probes", [])
+                ],
+            )
+            for failure in data["failures"]
+        ],
+    )
+
+
+def probe_fetch_report_failures(
+    client: FetchClient,
+    report: FetchReport,
+    limit: int | None = None,
+    log: Callable[[str], None] | None = None,
+) -> int:
+    probed = 0
+
+    for index, failure in enumerate(report.failures):
+        if limit is not None and probed >= limit:
+            break
+        if failure.probes:
+            continue
+
+        probe_urls = _failure_probe_urls(failure.url)
+        if not probe_urls:
+            continue
+
+        probes = [_probe_url(client, label=label, url=url) for label, url in probe_urls]
+        report.failures[index] = replace(failure, probes=probes, classification=_classify_failure_probes(probes))
+        probed += 1
+        _log(log, f"Probed {failure.url}: {_probe_summary(probes)}")
+
+    return probed
+
+
 def _report_json(report: FetchReport) -> dict[str, object]:
     return {
         "mode": report.mode,
@@ -405,14 +657,31 @@ def _report_json(report: FetchReport) -> dict[str, object]:
                 "url": failure.url,
                 "status_code": failure.status_code,
                 "error": failure.error,
+                "classification": failure.classification or _classify_failure_probes(failure.probes),
+                "probes": [
+                    {
+                        "label": probe.label,
+                        "url": probe.url,
+                        "status_code": probe.status_code,
+                        "error": probe.error,
+                        "pdf_alternatives": list(probe.pdf_alternatives),
+                    }
+                    for probe in failure.probes
+                ],
             }
             for failure in report.failures
         ],
     }
 
 
-def _failure_from_error(error: Exception, stage: str, legislation_type: str, year: int) -> FetchFailure:
-    url: str | None = None
+def _failure_from_error(
+    error: Exception,
+    stage: str,
+    legislation_type: str,
+    year: int,
+    number: int | None = None,
+    url: str | None = None,
+) -> FetchFailure:
     status_code: int | None = None
     message = str(error)
 
@@ -424,11 +693,111 @@ def _failure_from_error(error: Exception, stage: str, legislation_type: str, yea
         stage=stage,
         legislation_type=legislation_type,
         year=year,
-        number=None,
+        number=number,
         url=url,
         status_code=status_code,
         error=message,
     )
+
+
+def _year_fetch_message(prefix: str, documents: int, failures: int) -> str:
+    message = f"{prefix}: {documents} documents"
+    if failures:
+        message += f", {failures} failures"
+    return message
+
+
+def _failure_probe_urls(url: str | None) -> list[tuple[str, str]]:
+    if url is None:
+        return []
+
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2 or parts[-1] != "data.xml":
+        return []
+
+    document_parts = parts[:-1]
+    if _looks_like_iso_date(document_parts[-1]):
+        document_parts = document_parts[:-1]
+
+    base_url = f"{parsed.scheme}://{parsed.netloc}/{'/'.join(document_parts)}"
+    return [
+        ("latest_xml", f"{base_url}/data.xml"),
+        ("enacted_xml", f"{base_url}/enacted/data.xml"),
+        ("resources_xml", f"{base_url}/resources/data.xml"),
+    ]
+
+
+def _looks_like_iso_date(value: str) -> bool:
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _probe_url(client: FetchClient, label: str, url: str) -> FetchProbe:
+    try:
+        response = client.get(url)
+        status_code = response.status_code
+        content = response.content
+    except Exception as error:
+        return FetchProbe(label=label, url=url, status_code=None, error=str(error))
+
+    pdf_alternatives: tuple[str, ...] = ()
+    if label == "resources_xml" and status_code < 400:
+        pdf_alternatives = _pdf_alternatives_from_resources(content)
+
+    return FetchProbe(label=label, url=url, status_code=status_code, error=None, pdf_alternatives=pdf_alternatives)
+
+
+def _pdf_alternatives_from_resources(content: bytes) -> tuple[str, ...]:
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError:
+        return ()
+
+    alternatives: list[str] = []
+    for element in root.iter():
+        uri = element.attrib.get("URI")
+        if uri is not None and ".pdf" in uri.lower():
+            alternatives.append(uri)
+    return tuple(alternatives)
+
+
+def _probe_summary(probes: list[FetchProbe]) -> str:
+    return ", ".join(f"{probe.label}={probe.status_code or 'error'}" for probe in probes)
+
+
+def _classify_failure_probes(probes: list[FetchProbe]) -> str | None:
+    if not probes:
+        return None
+
+    latest_xml = _probe_status(probes, "latest_xml")
+    enacted_xml = _probe_status(probes, "enacted_xml")
+    resources_xml = _probe_status(probes, "resources_xml")
+    has_pdf = any(probe.pdf_alternatives for probe in probes)
+
+    if latest_xml == 200:
+        if has_pdf:
+            return "dated_xml_unavailable_latest_xml_available_pdf_available"
+        return "dated_xml_unavailable_latest_xml_available"
+    if enacted_xml == 200:
+        if has_pdf:
+            return "dated_xml_unavailable_enacted_xml_available_pdf_available"
+        return "dated_xml_unavailable_enacted_xml_available"
+    if resources_xml == 200 and has_pdf:
+        return "dated_xml_unavailable_pdf_available"
+    if resources_xml == 200:
+        return "dated_xml_unavailable_metadata_available"
+    return "dated_xml_unavailable_no_fallback_found"
+
+
+def _probe_status(probes: list[FetchProbe], label: str) -> int | None:
+    for probe in probes:
+        if probe.label == label:
+            return probe.status_code
+    return None
 
 
 def _log(log: Callable[[str], None] | None, message: str) -> None:
@@ -441,11 +810,31 @@ def _log_empty_year_checkpoint(
     empty_start_year: int | None,
     year: int,
     message: Callable[[int, int], str],
-) -> int:
+) -> int | None:
     start_year = empty_start_year or year
     if (year - start_year + 1) % EMPTY_YEAR_LOG_INTERVAL == 0:
         _log(log, message(start_year, year))
+        return None
     return start_year
+
+
+def document_xml_output_path(
+    legislation_type: str,
+    year: int,
+    number: int,
+    as_enacted: bool = False,
+    at: str | None = None,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    source_path: tuple[str, ...] | None = None,
+) -> Path:
+    if as_enacted and at is not None:
+        raise ValueError("Cannot write enacted XML at a point in time.")
+    document_path = source_path or (legislation_type, str(year), str(number))
+    if as_enacted:
+        return output_root / "xml" / "enacted" / Path(*document_path) / "data.xml"
+
+    snapshot_date = at or date.today().isoformat()
+    return output_root / "xml" / "point-in-time" / snapshot_date / Path(*document_path) / "data.xml"
 
 
 def write_document_xml(
@@ -456,23 +845,17 @@ def write_document_xml(
     as_enacted: bool = False,
     at: str | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    source_path: tuple[str, ...] | None = None,
 ) -> Path:
-    if as_enacted and at is not None:
-        raise ValueError("Cannot write enacted XML at a point in time.")
-    if as_enacted:
-        path = output_root / "xml" / "enacted" / legislation_type / str(year) / str(number) / "data.xml"
-    else:
-        snapshot_date = at or date.today().isoformat()
-        path = (
-            output_root
-            / "xml"
-            / "point-in-time"
-            / snapshot_date
-            / legislation_type
-            / str(year)
-            / str(number)
-            / "data.xml"
-        )
+    path = document_xml_output_path(
+        legislation_type=legislation_type,
+        year=year,
+        number=number,
+        as_enacted=as_enacted,
+        at=at,
+        output_root=output_root,
+        source_path=source_path,
+    )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)

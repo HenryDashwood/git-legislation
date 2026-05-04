@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -6,6 +8,7 @@ NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
     "leg": "http://www.legislation.gov.uk/namespaces/legislation",
 }
+CONVERSION_LOG_INTERVAL = 500
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,38 @@ class DocumentSection:
     number: str
     title: str
     lines: list[str]
+    commentary_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MarkdownOutputTarget:
+    source_path: tuple[str, ...]
+    as_enacted: bool
+    at: str | None = None
+
+
+@dataclass
+class ConversionFailure:
+    input_path: str
+    source_path: tuple[str, ...]
+    error: str
+
+
+@dataclass
+class ConversionReport:
+    mode: str
+    legislation_type: str
+    at: str | None = None
+    converted_paths: list[str] = field(default_factory=list)
+    failures: list[ConversionFailure] = field(default_factory=list)
+
+    @classmethod
+    def enacted(cls, legislation_type: str) -> "ConversionReport":
+        return cls(mode="enacted", legislation_type=legislation_type)
+
+    @classmethod
+    def point_in_time(cls, legislation_type: str, at: str) -> "ConversionReport":
+        return cls(mode="point-in-time", legislation_type=legislation_type, at=at)
 
 
 def document_title(xml_path: Path) -> str:
@@ -92,32 +127,186 @@ def document_sections(xml_path: Path) -> list[DocumentSection]:
                 number=" ".join("".join(number_element.itertext()).split()),
                 title=" ".join(title.split()),
                 lines=_section_lines(group),
+                commentary_refs=[
+                    ref
+                    for commentary_ref in number_element.findall("leg:CommentaryRef", namespaces=NAMESPACES)
+                    if (ref := commentary_ref.attrib.get("Ref")) is not None
+                ],
             )
         )
 
     return sections
 
 
+def document_commentaries(xml_path: Path) -> dict[str, str]:
+    root = ElementTree.parse(xml_path).getroot()
+    commentaries: dict[str, str] = {}
+
+    for commentary in root.findall(".//leg:Commentaries/leg:Commentary", namespaces=NAMESPACES):
+        commentary_id = commentary.attrib.get("id")
+        if commentary_id is None:
+            continue
+
+        text = _element_text(commentary)
+        if text:
+            commentaries[commentary_id] = text
+
+    return commentaries
+
+
 def render_document_markdown(xml_path: Path) -> str:
+    metadata = document_metadata(xml_path)
     prelims = document_prelims(xml_path)
     sections = document_sections(xml_path)
+    commentaries = document_commentaries(xml_path)
 
-    blocks = [f"# {prelims.title}", prelims.number, prelims.long_title]
+    blocks = [_frontmatter(metadata), f"# {prelims.title}", prelims.number, prelims.long_title]
 
     for section in sections:
         blocks.append(f"## {section.number} {section.title}")
+        blocks.extend(
+            f"> Commentary: {commentaries[ref]}" for ref in section.commentary_refs if ref in commentaries
+        )
         blocks.extend(section.lines)
 
     return "\n\n".join(blocks) + "\n"
 
 
+def markdown_output_target_from_xml_path(xml_path: Path, output_root: Path) -> MarkdownOutputTarget:
+    try:
+        relative_path = xml_path.resolve().relative_to((output_root / "xml").resolve())
+    except ValueError as error:
+        raise ValueError(f"{xml_path} is not under {output_root / 'xml'}") from error
+
+    parts = relative_path.parts
+    if len(parts) < 4 or parts[-1] != "data.xml":
+        raise ValueError(f"{xml_path} does not look like fetched XML")
+
+    if parts[0] == "enacted":
+        return MarkdownOutputTarget(source_path=parts[1:-1], as_enacted=True)
+
+    if parts[0] == "point-in-time":
+        if len(parts) < 5:
+            raise ValueError(f"{xml_path} does not include a point-in-time snapshot date")
+        return MarkdownOutputTarget(source_path=parts[2:-1], as_enacted=False, at=parts[1])
+
+    raise ValueError(f"{xml_path} is not in an enacted or point-in-time XML tree")
+
+
 def write_document_markdown(
-    markdown: str, legislation_type: str, year: int, number: int, output_root: Path
+    markdown: str,
+    output_root: Path,
+    source_path: tuple[str, ...],
+    as_enacted: bool = False,
+    at: str | None = None,
 ) -> Path:
-    path = output_root / "markdown" / "enacted" / legislation_type / str(year) / f"{number}.md"
+    if as_enacted and at is not None:
+        raise ValueError("Cannot write enacted Markdown at a point in time.")
+    if not source_path:
+        raise ValueError("Cannot write Markdown without a document source path.")
+
+    output_path = Path(*source_path[:-1]) / f"{source_path[-1]}.md"
+    if as_enacted:
+        path = output_root / "markdown" / "enacted" / output_path
+    else:
+        if at is None:
+            raise ValueError("Point-in-time Markdown requires a snapshot date.")
+        path = output_root / "markdown" / "point-in-time" / at / output_path
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown)
     return path
+
+
+def convert_document_markdown(xml_path: Path, output_root: Path) -> Path:
+    target = markdown_output_target_from_xml_path(xml_path, output_root)
+    return write_document_markdown(
+        render_document_markdown(xml_path),
+        output_root=output_root,
+        source_path=target.source_path,
+        as_enacted=target.as_enacted,
+        at=target.at,
+    )
+
+
+def convert_xml_tree(
+    xml_root: Path,
+    output_root: Path,
+    report: ConversionReport | None = None,
+    log: Callable[[str], None] | None = None,
+) -> list[Path]:
+    paths: list[Path] = []
+
+    for index, xml_path in enumerate(sorted(xml_root.rglob("data.xml")), start=1):
+        try:
+            path = convert_document_markdown(xml_path, output_root=output_root)
+        except Exception as error:
+            failure = ConversionFailure(
+                input_path=str(xml_path),
+                source_path=_source_path_for_failure(xml_path, output_root),
+                error=str(error),
+            )
+            if report is not None:
+                report.failures.append(failure)
+            _log(log, f"Failed converting {xml_path}: {error}")
+        else:
+            paths.append(path)
+            if report is not None:
+                report.converted_paths.append(str(path))
+
+        if index % CONVERSION_LOG_INTERVAL == 0:
+            failure_count = len(report.failures) if report is not None else 0
+            _log(
+                log,
+                f"Processed {index} XML documents under {xml_root}: "
+                f"{len(paths)} converted, {failure_count} failures",
+            )
+
+    return paths
+
+
+def write_conversion_report(report: ConversionReport, output_root: Path) -> Path:
+    if report.mode == "enacted":
+        path = output_root / "reports" / "convert" / "enacted" / report.legislation_type / "report.json"
+    elif report.mode == "point-in-time":
+        if report.at is None:
+            raise ValueError("Point-in-time conversion reports require a snapshot date.")
+        path = output_root / "reports" / "convert" / "point-in-time" / report.at / f"{report.legislation_type}.json"
+    else:
+        raise ValueError(f"Unknown conversion report mode: {report.mode}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_report_json(report), indent=2) + "\n")
+    return path
+
+
+def _source_path_for_failure(xml_path: Path, output_root: Path) -> tuple[str, ...]:
+    try:
+        return markdown_output_target_from_xml_path(xml_path, output_root).source_path
+    except ValueError:
+        return ()
+
+
+def _report_json(report: ConversionReport) -> dict[str, object]:
+    return {
+        "mode": report.mode,
+        "legislation_type": report.legislation_type,
+        "at": report.at,
+        "converted_paths": report.converted_paths,
+        "failures": [
+            {
+                "input_path": failure.input_path,
+                "source_path": list(failure.source_path),
+                "error": failure.error,
+            }
+            for failure in report.failures
+        ],
+    }
+
+
+def _log(log: Callable[[str], None] | None, message: str) -> None:
+    if log is not None:
+        log(message)
 
 
 def _section_lines(group: ElementTree.Element) -> list[str]:
@@ -125,6 +314,24 @@ def _section_lines(group: ElementTree.Element) -> list[str]:
     if paragraph is None:
         return []
     return _paragraph_lines(paragraph)
+
+
+def _frontmatter(metadata: DocumentMetadata) -> str:
+    lines = [
+        "---",
+        f'title: "{_yaml_string(metadata.title)}"',
+        f'document_uri: "{_yaml_string(metadata.document_uri)}"',
+    ]
+    if metadata.status is not None:
+        lines.append(f'status: "{_yaml_string(metadata.status)}"')
+    if metadata.extent is not None:
+        lines.append(f'extent: "{_yaml_string(metadata.extent)}"')
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _yaml_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _paragraph_lines(paragraph: ElementTree.Element) -> list[str]:

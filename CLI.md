@@ -96,6 +96,46 @@ uv run git-legislation fetch-year ukpga 2026 --at 2026-03-18
 
 This command prints each file path it writes.
 
+### `fetch-source-xml`
+
+Fetch XML for one legislation.gov.uk source path. Use this for older regnal-year paths discovered in feeds or reports, such as `ukpga/Geo3/44/42`.
+
+Fetch the latest XML:
+
+```bash
+uv run git-legislation fetch-source-xml ukpga/Geo3/44/42
+```
+
+Output:
+
+```text
+output/xml/latest/ukpga/Geo3/44/42/data.xml
+```
+
+Fetch enacted XML:
+
+```bash
+uv run git-legislation fetch-source-xml ukpga/Geo3/44/42 --as-enacted
+```
+
+Output:
+
+```text
+output/xml/enacted/ukpga/Geo3/44/42/data.xml
+```
+
+Fetch point-in-time XML:
+
+```bash
+uv run git-legislation fetch-source-xml ukpga/Geo3/44/42 --at 2026-05-03
+```
+
+Output:
+
+```text
+output/xml/point-in-time/2026-05-03/ukpga/Geo3/44/42/data.xml
+```
+
 ### `fetch-enacted-corpus`
 
 Fetch enacted XML across a range of years for one legislation type.
@@ -112,6 +152,12 @@ Output XML:
 output/xml/enacted/{type}/{year}/{number}/data.xml
 ```
 
+Older legislation can use regnal-year source paths rather than calendar-year paths. Those are mirrored from legislation.gov.uk:
+
+```text
+output/xml/enacted/ukpga/Vict/1-2/42/data.xml
+```
+
 Fetch report:
 
 ```text
@@ -124,13 +170,31 @@ The command logs years where documents are found, failures, and occasional check
 
 ### `fetch-point-in-time-corpus`
 
-Fetch point-in-time XML for the configured corpus as it stood on one snapshot date.
+Fetch latest/current XML for the configured corpus and store it under today's snapshot date.
+
+```bash
+uv run git-legislation fetch-point-in-time-corpus
+```
+
+The command uses current `/data.xml` document URLs and writes them under:
+
+```text
+output/xml/point-in-time/YYYY-MM-DD/{type}/{year}/{number}/data.xml
+```
+
+This is the main path for building a corpus of legislation as it currently stands.
+
+The fetcher is idempotent at the document XML level. Reruns still request the year feeds so they can discover the document list, but they skip document XML URLs whose target `data.xml` file already exists in the output tree.
+
+You can still request an explicit historical date while exploring source coverage:
 
 ```bash
 uv run git-legislation fetch-point-in-time-corpus --at 2026-05-03
 ```
 
-The CLI only takes the point-in-time date. The corpus scope is configured in code while we build this out incrementally; at this stage it starts with `ukpga`.
+With `--at`, the command uses dated `/YYYY-MM-DD/data.xml` document URLs.
+
+The corpus scope is configured in code while we build this out incrementally; at this stage it starts with `ukpga`.
 
 This command is for targeted API fetching while we explore the source. The initial full corpus import should use Research Legislation bulk downloads.
 
@@ -140,15 +204,57 @@ Output XML:
 output/xml/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}/data.xml
 ```
 
+Older legislation can use regnal-year source paths rather than calendar-year paths. Those are mirrored from legislation.gov.uk:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/ukpga/Vict/1-2/42/data.xml
+```
+
 Fetch report:
 
 ```text
 output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
 ```
 
-The report records fetched file paths and failures such as missing year feeds or unavailable dated XML.
+The report records fetched or already-present file paths and failures such as missing year feeds or unavailable dated XML.
 
 The command logs years where documents are found, failures, and occasional checkpoints for long empty ranges.
+
+### `probe-fetch-failures`
+
+Probe fallback URLs for failures in a fetch report and write the probe results back into the report.
+
+```bash
+uv run git-legislation probe-fetch-failures \
+  output/reports/fetch/point-in-time/2026-05-03.json \
+  --limit 20
+```
+
+Use `--limit` while exploring so we do not multiply requests across thousands of historical failures.
+
+For each unprobed document failure, this checks:
+
+```text
+{document}/data.xml
+{document}/enacted/data.xml
+{document}/resources/data.xml
+```
+
+The report records each probe's label, URL, HTTP status, error if one occurred, any PDF alternative URLs found in `resources/data.xml`, and a `classification` for the failure.
+
+Current classifications include:
+
+```text
+dated_xml_unavailable_latest_xml_available
+dated_xml_unavailable_latest_xml_available_pdf_available
+dated_xml_unavailable_enacted_xml_available
+dated_xml_unavailable_enacted_xml_available_pdf_available
+dated_xml_unavailable_pdf_available
+dated_xml_unavailable_metadata_available
+dated_xml_unavailable_no_fallback_found
+```
+
+This lets us distinguish fixable fetcher gaps from source limitations such as PDF-only historical legislation.
 
 ### `download-bulk-enacted-xml`
 
@@ -195,17 +301,98 @@ Convert one CLML XML file to Markdown.
 
 ```bash
 uv run git-legislation convert-xml \
-  output/xml/enacted/ukpga/2026/14/data.xml \
-  ukpga 2026 14
+  output/xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml
 ```
 
-Current output:
+The command infers the Markdown destination from the fetched XML path.
+
+Point-in-time output:
+
+```text
+output/markdown/point-in-time/2026-05-03/ukpga/2026/14.md
+```
+
+Enacted input:
+
+```bash
+uv run git-legislation convert-xml \
+  output/xml/enacted/ukpga/2026/14/data.xml
+```
+
+Enacted output:
 
 ```text
 output/markdown/enacted/ukpga/2026/14.md
 ```
 
 The converter is still early and currently renders a subset of CLML into a single Markdown file.
+
+### `convert-enacted-corpus`
+
+Convert all fetched enacted XML for one legislation type.
+
+```bash
+uv run git-legislation convert-enacted-corpus ukpga
+```
+
+Input XML:
+
+```text
+output/xml/enacted/{type}/**/data.xml
+```
+
+Output Markdown:
+
+```text
+output/markdown/enacted/{type}/**/*.md
+```
+
+Conversion report:
+
+```text
+output/reports/convert/enacted/{type}/report.json
+```
+
+Older legislation keeps its source path:
+
+```text
+output/xml/enacted/ukpga/Vict/1-2/42/data.xml
+output/markdown/enacted/ukpga/Vict/1-2/42.md
+```
+
+### `convert-point-in-time-corpus`
+
+Convert all fetched point-in-time XML for one snapshot date and legislation type.
+
+```bash
+uv run git-legislation convert-point-in-time-corpus --at 2026-05-03
+```
+
+The legislation type defaults to `ukpga`. Override it with:
+
+```bash
+uv run git-legislation convert-point-in-time-corpus --at 2026-05-03 --legislation-type ukla
+```
+
+Input XML:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/**/data.xml
+```
+
+Output Markdown:
+
+```text
+output/markdown/point-in-time/{yyyy-mm-dd}/{type}/**/*.md
+```
+
+Conversion report:
+
+```text
+output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
+```
+
+The corpus converters log periodic checkpoints, continue after malformed or unsupported XML files, and write failures to the conversion report with the input path, inferred source path, and error message.
 
 ## Output Layout
 
@@ -228,14 +415,23 @@ output/reports/fetch/enacted/{type}/{start-year}-{end-year}.json
 output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
 ```
 
+Conversion reports:
+
+```text
+output/reports/convert/enacted/{type}/report.json
+output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
+```
+
 Markdown:
 
 ```text
 output/markdown/enacted/{type}/{year}/{number}.md
+output/markdown/point-in-time/{yyyy-mm-dd}/{type}/{year}/{number}.md
 ```
 
 ## Current Caveats
 
 - The first complete path is focused on `ukpga`.
-- `fetch-year`, `fetch-enacted-corpus`, `fetch-point-in-time-corpus`, and `seed-enacted-xml` print paths for files they write.
+- `fetch-year` and `seed-enacted-xml` print paths for files they write.
+- `fetch-enacted-corpus` and `fetch-point-in-time-corpus` print progress summaries and the report path, but not every written XML path.
 - Markdown conversion is still a prototype and does not yet handle the full CLML surface.

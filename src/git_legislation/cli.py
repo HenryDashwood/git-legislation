@@ -5,18 +5,28 @@ from typing import Annotated
 import click
 import typer
 
-from converters.clmltomarkdown import render_document_markdown, write_document_markdown
+from converters.clmltomarkdown import (
+    ConversionReport,
+    convert_document_markdown,
+    convert_xml_tree,
+    write_conversion_report,
+)
 from fetchers.legislationdotgovdotuk import (
     DEFAULT_OUTPUT_ROOT,
     FetchReport,
     create_client,
+    document_ref_from_source_path,
+    fetch_document_ref_xml,
     fetch_document_xml,
     fetch_enacted_corpus,
     fetch_point_in_time_corpus,
     fetch_year_document_refs,
     fetch_year_documents,
+    probe_fetch_report_failures,
+    read_fetch_report,
     write_document_xml,
     write_fetch_report,
+    write_source_document_xml,
 )
 from seeding import BulkArchiveDownloadError, download_bulk_archive, seed_enacted_xml_from_archive
 
@@ -59,23 +69,78 @@ def fetch_xml(
     typer.echo(path)
 
 
-@app.command("convert-xml")
-def convert_xml(
-    xml_path: Path,
-    legislation_type: str,
-    year: int,
-    number: int,
-    output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
+@app.command("fetch-source-xml")
+def fetch_source_xml(
+    source_path: str,
+    as_enacted: Annotated[bool, typer.Option("--as-enacted", help="Fetch /enacted/data.xml.")] = False,
+    at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
+    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    markdown = render_document_markdown(xml_path)
-    path = write_document_markdown(
-        markdown,
-        legislation_type=legislation_type,
-        year=year,
-        number=number,
+    document = document_ref_from_source_path(source_path)
+    with create_client() as client:
+        content = fetch_document_ref_xml(
+            client,
+            document=document,
+            as_enacted=as_enacted,
+            at=at,
+        )
+
+    path = write_source_document_xml(
+        content,
+        source_path=document.path,
+        as_enacted=as_enacted,
+        at=at,
         output_root=output_root,
     )
     typer.echo(path)
+
+
+@app.command("convert-xml")
+def convert_xml(
+    xml_path: Path,
+    output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    path = convert_document_markdown(xml_path, output_root=output_root)
+    typer.echo(path)
+
+
+@app.command("convert-enacted-corpus")
+def convert_enacted_corpus(
+    legislation_type: str,
+    output_root: Annotated[
+        Path, typer.Option(help="Root folder for converter input and output.")
+    ] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    report = ConversionReport.enacted(legislation_type=legislation_type)
+    paths = convert_xml_tree(
+        output_root / "xml" / "enacted" / legislation_type,
+        output_root=output_root,
+        report=report,
+        log=typer.echo,
+    )
+    typer.echo(f"Converted enacted {legislation_type}: {len(paths)} documents, {len(report.failures)} failures")
+    typer.echo(write_conversion_report(report, output_root=output_root))
+
+
+@app.command("convert-point-in-time-corpus")
+def convert_point_in_time_corpus(
+    at: Annotated[str, typer.Option("--at", help="Snapshot date to convert as YYYY-MM-DD.")],
+    legislation_type: Annotated[str, typer.Option(help="Legislation type to convert.")] = "ukpga",
+    output_root: Annotated[
+        Path, typer.Option(help="Root folder for converter input and output.")
+    ] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    report = ConversionReport.point_in_time(legislation_type=legislation_type, at=at)
+    paths = convert_xml_tree(
+        output_root / "xml" / "point-in-time" / at / legislation_type,
+        output_root=output_root,
+        report=report,
+        log=typer.echo,
+    )
+    typer.echo(
+        f"Converted point-in-time {legislation_type} at {at}: {len(paths)} documents, {len(report.failures)} failures"
+    )
+    typer.echo(write_conversion_report(report, output_root=output_root))
 
 
 @app.command("list-year")
@@ -125,7 +190,7 @@ def fetch_enacted_corpus_command(
         end_year=end_year or date.today().year,
     )
     with create_client() as client:
-        paths = fetch_enacted_corpus(
+        fetch_enacted_corpus(
             client,
             legislation_type=legislation_type,
             start_year=start_year,
@@ -135,19 +200,21 @@ def fetch_enacted_corpus_command(
             log=typer.echo,
         )
 
-    for path in paths:
-        typer.echo(path)
     typer.echo(write_fetch_report(report, output_root=output_root))
 
 
 @app.command("fetch-point-in-time-corpus")
 def fetch_point_in_time_corpus_command(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to fetch as YYYY-MM-DD.")],
+    at: Annotated[
+        str | None,
+        typer.Option("--at", help="Snapshot date to fetch as YYYY-MM-DD. Defaults to today's latest/current XML."),
+    ] = None,
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    report = FetchReport.point_in_time_corpus(at=at)
+    snapshot_date = at or date.today().isoformat()
+    report = FetchReport.point_in_time_corpus(at=snapshot_date)
     with create_client() as client:
-        paths = fetch_point_in_time_corpus(
+        fetch_point_in_time_corpus(
             client,
             at=at,
             output_root=output_root,
@@ -155,9 +222,28 @@ def fetch_point_in_time_corpus_command(
             log=typer.echo,
         )
 
-    for path in paths:
-        typer.echo(path)
     typer.echo(write_fetch_report(report, output_root=output_root))
+
+
+@app.command("probe-fetch-failures")
+def probe_fetch_failures(
+    report_path: Path,
+    limit: Annotated[
+        int | None,
+        typer.Option(help="Maximum number of unprobed failures to probe."),
+    ] = None,
+) -> None:
+    report = read_fetch_report(report_path)
+    with create_client() as client:
+        probed = probe_fetch_report_failures(
+            client,
+            report,
+            limit=limit,
+            log=typer.echo,
+        )
+
+    typer.echo(f"Probed {probed} failures")
+    typer.echo(write_fetch_report(report, output_root=report_path.parents[3]))
 
 
 @app.command("download-bulk-enacted-xml")
