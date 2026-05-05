@@ -24,6 +24,7 @@ from fetchers.legislationdotgovdotuk import (
     fetch_year_document_refs,
     fetch_year_documents,
     fetch_year_feed,
+    format_xml,
     parse_year_feed,
     probe_fetch_report_failures,
     read_fetch_report,
@@ -633,8 +634,7 @@ def test_legislation_client_retries_rate_limits_with_retry_after(monkeypatch) ->
     assert calls == 2
     assert sleep_calls == [7.0]
     assert messages == [
-        "Rate limited fetching https://www.legislation.gov.uk/ukppa/1985/data.feed; "
-        "waiting 7s before retry 1/5"
+        "Rate limited fetching https://www.legislation.gov.uk/ukppa/1985/data.feed; waiting 7s before retry 1/5"
     ]
 
 
@@ -677,11 +677,15 @@ def test_write_document_xml_writes_current_xml_to_todays_point_in_time_folder(mo
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.date", FixedDate)
 
     path = write_document_xml(
-        b"<Legislation>example</Legislation>", legislation_type="ukpga", year=2026, number=14, output_root=tmp_path
+        b"<Legislation><Body>example</Body></Legislation>",
+        legislation_type="ukpga",
+        year=2026,
+        number=14,
+        output_root=tmp_path,
     )
 
     assert path == tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_document_xml_output_path_matches_current_xml_output_folder(monkeypatch, tmp_path: Path) -> None:
@@ -694,7 +698,7 @@ def test_document_xml_output_path_matches_current_xml_output_folder(monkeypatch,
 
 def test_write_document_xml_writes_enacted_xml(tmp_path: Path) -> None:
     path = write_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         legislation_type="ukpga",
         year=2026,
         number=14,
@@ -703,12 +707,12 @@ def test_write_document_xml_writes_enacted_xml(tmp_path: Path) -> None:
     )
 
     assert path == tmp_path / "xml" / "enacted" / "ukpga" / "2026" / "14" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_write_document_xml_writes_point_in_time_xml(tmp_path: Path) -> None:
     path = write_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         legislation_type="ukpga",
         year=2026,
         number=14,
@@ -717,12 +721,12 @@ def test_write_document_xml_writes_point_in_time_xml(tmp_path: Path) -> None:
     )
 
     assert path == tmp_path / "xml" / "point-in-time" / "2026-03-18" / "ukpga" / "2026" / "14" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_write_document_xml_writes_source_shaped_point_in_time_xml(tmp_path: Path) -> None:
     path = write_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         legislation_type="ukpga",
         year=0,
         number=0,
@@ -732,42 +736,49 @@ def test_write_document_xml_writes_source_shaped_point_in_time_xml(tmp_path: Pat
     )
 
     assert path == tmp_path / "xml" / "point-in-time" / "2026-03-18" / "ukpga" / "Vict" / "1-2" / "42" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_write_source_document_xml_writes_latest_xml(tmp_path: Path) -> None:
     path = write_source_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         source_path=("ukpga", "Geo3", "44", "42"),
         output_root=tmp_path,
     )
 
     assert path == tmp_path / "xml" / "latest" / "ukpga" / "Geo3" / "44" / "42" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_write_source_document_xml_writes_enacted_xml(tmp_path: Path) -> None:
     path = write_source_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         source_path=("ukpga", "Geo3", "44", "42"),
         as_enacted=True,
         output_root=tmp_path,
     )
 
     assert path == tmp_path / "xml" / "enacted" / "ukpga" / "Geo3" / "44" / "42" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
 
 
 def test_write_source_document_xml_writes_point_in_time_xml(tmp_path: Path) -> None:
     path = write_source_document_xml(
-        b"<Legislation>example</Legislation>",
+        b"<Legislation><Body>example</Body></Legislation>",
         source_path=("ukpga", "Geo3", "44", "42"),
         at="2026-05-03",
         output_root=tmp_path,
     )
 
     assert path == tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "Geo3" / "44" / "42" / "data.xml"
-    assert path.read_bytes() == b"<Legislation>example</Legislation>"
+    assert path.read_bytes() == b"<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
+
+
+def test_format_xml_preserves_xml_declaration() -> None:
+    assert (
+        format_xml(b'<?xml version="1.0" encoding="utf-8"?><Legislation><Body>example</Body></Legislation>')
+        == b"<?xml version='1.0' encoding='utf-8'?>\n<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
+    )
 
 
 def test_fetch_year_documents_fetches_and_writes_each_document(monkeypatch, tmp_path: Path) -> None:
@@ -902,7 +913,7 @@ def test_fetch_year_documents_refetches_invalid_existing_xml(monkeypatch, tmp_pa
 
     assert paths == [existing_path]
     assert fetch_document_calls == [DocumentRef(legislation_type="ukpga", year=2026, number=14, title="Act 14")]
-    assert existing_path.read_bytes() == b"<Legislation>refetched</Legislation>"
+    assert existing_path.read_bytes() == b"<Legislation>refetched</Legislation>\n"
 
 
 def test_fetch_year_documents_removes_invalid_existing_xml_when_refetch_fails(monkeypatch, tmp_path: Path) -> None:

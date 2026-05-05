@@ -4,15 +4,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
+from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 import httpx
+
+etree: Any = import_module("lxml.etree")
 
 
 @dataclass(frozen=True)
@@ -422,7 +425,7 @@ def write_source_document_xml(
         path = output_root / "xml" / "latest" / Path(*source_path) / "data.xml"
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    path.write_bytes(format_xml(content))
     return path
 
 
@@ -464,16 +467,17 @@ def _fetch_document_refs_from_feed(
 ) -> list[DocumentRef]:
     documents: list[DocumentRef] = []
     page_count = 0
+    next_url: str | None = url
 
-    while url is not None:
-        response = client.get(url)
+    while next_url is not None:
+        response = client.get(next_url)
         response.raise_for_status()
         page_count += 1
         page_documents = parse_year_feed(response.content)
         documents.extend(page_documents)
         if page_count > 1:
-            _log(log, f"Read feed page {page_count}: {len(documents)} documents discovered so far from {url}")
-        url = next_feed_url(response.content)
+            _log(log, f"Read feed page {page_count}: {len(documents)} documents discovered so far from {next_url}")
+        next_url = next_feed_url(response.content)
 
     return documents
 
@@ -739,9 +743,7 @@ def fetch_point_in_time_corpus(
 
 
 def _point_in_time_corpus_types(legislation_types: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
-    selected_types = (
-        tuple(POINT_IN_TIME_CORPUS_START_YEARS) if legislation_types is None else tuple(legislation_types)
-    )
+    selected_types = tuple(POINT_IN_TIME_CORPUS_START_YEARS) if legislation_types is None else tuple(legislation_types)
     unknown_types = sorted(set(selected_types) - set(POINT_IN_TIME_CORPUS_START_YEARS))
     if unknown_types:
         raise ValueError(f"Unsupported point-in-time corpus legislation type(s): {', '.join(unknown_types)}")
@@ -1075,5 +1077,13 @@ def write_document_xml(
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
+    path.write_bytes(format_xml(content))
     return path
+
+
+def format_xml(content: bytes) -> bytes:
+    has_xml_declaration = content.lstrip().startswith(b"<?xml")
+    parser = etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True)
+    document = etree.fromstring(content, parser).getroottree()
+    etree.indent(document, space="\t")
+    return etree.tostring(document, encoding="utf-8", xml_declaration=has_xml_declaration) + b"\n"
