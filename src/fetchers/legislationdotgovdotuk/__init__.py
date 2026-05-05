@@ -2,7 +2,8 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
@@ -19,6 +20,7 @@ class LegislationType:
     code: str
     label: str
     start_year: int
+    end_year: int | None = None
 
 
 BASE_URL = "https://www.legislation.gov.uk"
@@ -29,23 +31,26 @@ EMPTY_YEAR_LOG_INTERVAL = 100
 FEED_NUMBER_RANGE_SIZE = 100
 REQUEST_RETRY_DELAY_SECONDS = 1.0
 REQUEST_RETRIES = 2
+REQUEST_RATE_LIMIT_RETRIES = 5
+REQUEST_RATE_LIMIT_BACKOFF_SECONDS = 30.0
+REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS = 300.0
 REQUEST_TIMEOUT_SECONDS = 30.0
 SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES = {
-    "aep": LegislationType("aep", "Acts of the English Parliament", 1267),
-    "aosp": LegislationType("aosp", "Acts of the Old Scottish Parliament", 1424),
-    "aip": LegislationType("aip", "Acts of the Old Irish Parliament", 1495),
-    "apgb": LegislationType("apgb", "Acts of the Parliament of Great Britain", 1707),
-    "gbppa": LegislationType("gbppa", "Private and Personal Acts of the Parliament of Great Britain", 1707),
-    "gbla": LegislationType("gbla", "Local Acts of the Parliament of Great Britain", 1797),
+    "aep": LegislationType("aep", "Acts of the English Parliament", 1267, 1706),
+    "aosp": LegislationType("aosp", "Acts of the Old Scottish Parliament", 1424, 1707),
+    "aip": LegislationType("aip", "Acts of the Old Irish Parliament", 1495, 1800),
+    "apgb": LegislationType("apgb", "Acts of the Parliament of Great Britain", 1707, 1800),
+    "gbppa": LegislationType("gbppa", "Private and Personal Acts of the Parliament of Great Britain", 1707, 1800),
+    "gbla": LegislationType("gbla", "Local Acts of the Parliament of Great Britain", 1797, 1800),
     "ukpga": LegislationType("ukpga", "UK Public General Acts", 1801),
     "ukla": LegislationType("ukla", "UK Local Acts", 1801),
     "ukppa": LegislationType("ukppa", "UK Private and Personal Acts", 1801),
-    "apni": LegislationType("apni", "Acts of the Northern Ireland Parliament", 1921),
+    "apni": LegislationType("apni", "Acts of the Northern Ireland Parliament", 1921, 1972),
     "ukcm": LegislationType("ukcm", "UK Church Measures", 1920),
     "nisro": LegislationType("nisro", "Northern Ireland Statutory Rules and Orders", 1922),
     "uksi": LegislationType("uksi", "UK Statutory Instruments", 1948),
     "nisi": LegislationType("nisi", "Northern Ireland Orders in Council", 1972),
-    "mnia": LegislationType("mnia", "Measures of the Northern Ireland Assembly", 1974),
+    "mnia": LegislationType("mnia", "Measures of the Northern Ireland Assembly", 1974, 1974),
     "nisr": LegislationType("nisr", "Northern Ireland Statutory Rules", 1991),
     "asp": LegislationType("asp", "Acts of the Scottish Parliament", 1999),
     "ssi": LegislationType("ssi", "Scottish Statutory Instruments", 1999),
@@ -59,6 +64,11 @@ SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES = {
 }
 POINT_IN_TIME_CORPUS_START_YEARS = {
     code: legislation_type.start_year for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
+}
+POINT_IN_TIME_CORPUS_END_YEARS = {
+    code: legislation_type.end_year
+    for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
+    if legislation_type.end_year is not None
 }
 
 
@@ -170,10 +180,18 @@ class LegislationClient:
         headers: dict[str, str] | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
         retries: int = REQUEST_RETRIES,
+        rate_limit_retries: int = REQUEST_RATE_LIMIT_RETRIES,
+        rate_limit_backoff_seconds: float = REQUEST_RATE_LIMIT_BACKOFF_SECONDS,
+        rate_limit_max_backoff_seconds: float = REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS,
+        log: Callable[[str], None] | None = None,
     ) -> None:
         self.headers = headers or {}
         self.timeout = timeout
         self.retries = retries
+        self.rate_limit_retries = rate_limit_retries
+        self.rate_limit_backoff_seconds = rate_limit_backoff_seconds
+        self.rate_limit_max_backoff_seconds = rate_limit_max_backoff_seconds
+        self.log = log
 
     def __enter__(self) -> "LegislationClient":
         return self
@@ -188,18 +206,54 @@ class LegislationClient:
 
     def get(self, url: str) -> FetchResponse:
         request = Request(url, headers=self.headers)
-        for attempt in range(self.retries + 1):
+        connection_attempts = 0
+        rate_limit_attempts = 0
+
+        while True:
             try:
                 with urlopen(request, timeout=self.timeout) as response:
                     return FetchResponse(response.status, response.read(), url)
             except HTTPError as error:
+                if error.code == 429 and rate_limit_attempts < self.rate_limit_retries:
+                    rate_limit_attempts += 1
+                    delay_seconds = self._rate_limit_delay_seconds(error, rate_limit_attempts)
+                    _log(
+                        self.log,
+                        f"Rate limited fetching {url}; waiting {delay_seconds:g}s before retry "
+                        f"{rate_limit_attempts}/{self.rate_limit_retries}",
+                    )
+                    time.sleep(delay_seconds)
+                    continue
                 return FetchResponse(error.code, error.read(), url)
             except (TimeoutError, URLError, ConnectionResetError) as error:
-                if attempt == self.retries:
+                if connection_attempts == self.retries:
                     raise error
+                connection_attempts += 1
                 time.sleep(REQUEST_RETRY_DELAY_SECONDS)
 
-        raise RuntimeError("unreachable")
+    def _rate_limit_delay_seconds(self, error: HTTPError, attempt: int) -> float:
+        retry_after = error.headers.get("Retry-After") if error.headers is not None else None
+        retry_after_seconds = _retry_after_seconds(retry_after)
+        if retry_after_seconds is not None:
+            return retry_after_seconds
+        return min(
+            self.rate_limit_backoff_seconds * (2 ** (attempt - 1)),
+            self.rate_limit_max_backoff_seconds,
+        )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    if value.isdecimal():
+        return float(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(0.0, (retry_at - datetime.now(tz=UTC)).total_seconds())
 
 
 def document_xml_url(
@@ -274,12 +328,13 @@ def _document_ref_from_href(href: str, title: str) -> DocumentRef:
     )
 
 
-def create_client() -> LegislationClient:
+def create_client(log: Callable[[str], None] | None = None) -> LegislationClient:
     return LegislationClient(
         headers={
             "Accept": "application/xml",
             "User-Agent": USER_AGENT,
-        }
+        },
+        log=log,
     )
 
 
@@ -616,11 +671,13 @@ def fetch_point_in_time_corpus(
     log: Callable[[str], None] | None = None,
 ) -> list[Path]:
     snapshot_date = at or date.today().isoformat()
+    snapshot_year = date.fromisoformat(snapshot_date).year
     paths: list[Path] = []
     for legislation_type in _point_in_time_corpus_types(legislation_types):
         start_year = POINT_IN_TIME_CORPUS_START_YEARS[legislation_type]
+        end_year = min(snapshot_year, POINT_IN_TIME_CORPUS_END_YEARS.get(legislation_type, snapshot_year))
         empty_start_year: int | None = None
-        for year in range(start_year, date.fromisoformat(snapshot_date).year + 1):
+        for year in range(start_year, end_year + 1):
             try:
                 failure_count_before = len(report.failures) if report is not None else 0
                 if report is None:

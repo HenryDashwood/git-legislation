@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 import httpx
 
 from fetchers.legislationdotgovdotuk import (
+    POINT_IN_TIME_CORPUS_END_YEARS,
     POINT_IN_TIME_CORPUS_START_YEARS,
     SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES,
     DocumentRef,
@@ -38,6 +39,11 @@ def test_supported_point_in_time_legislation_types_cover_non_draft_api_types() -
     assert POINT_IN_TIME_CORPUS_START_YEARS == {
         code: legislation_type.start_year
         for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
+    }
+    assert POINT_IN_TIME_CORPUS_END_YEARS == {
+        code: legislation_type.end_year
+        for code, legislation_type in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES.items()
+        if legislation_type.end_year is not None
     }
     assert set(SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES) == {
         "aep",
@@ -584,6 +590,81 @@ def test_legislation_client_does_not_retry_http_status_errors(monkeypatch) -> No
 
     assert response.status_code == 404
     assert calls == 1
+
+
+def test_legislation_client_retries_rate_limits_with_retry_after(monkeypatch) -> None:
+    calls = 0
+    sleep_calls: list[float] = []
+    messages: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"<Legislation>example</Legislation>"
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            headers = Message()
+            headers["Retry-After"] = "7"
+            raise HTTPError(
+                url="https://www.legislation.gov.uk/ukppa/1985/data.feed",
+                code=429,
+                msg="Too Many Requests",
+                hdrs=headers,
+                fp=None,
+            )
+        return Response()
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
+
+    response = create_client(log=messages.append).get("https://www.legislation.gov.uk/ukppa/1985/data.feed")
+
+    assert response.status_code == 200
+    assert calls == 2
+    assert sleep_calls == [7.0]
+    assert messages == [
+        "Rate limited fetching https://www.legislation.gov.uk/ukppa/1985/data.feed; "
+        "waiting 7s before retry 1/5"
+    ]
+
+
+def test_legislation_client_returns_rate_limit_after_retries_are_exhausted(monkeypatch) -> None:
+    calls = 0
+    sleep_calls: list[float] = []
+
+    def fake_urlopen(request: object, timeout: float) -> object:
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            url="https://www.legislation.gov.uk/ukppa/1985/data.feed",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=Message(),
+            fp=None,
+        )
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
+
+    client = create_client()
+    client.rate_limit_retries = 2
+    client.rate_limit_backoff_seconds = 3.0
+
+    response = client.get("https://www.legislation.gov.uk/ukppa/1985/data.feed")
+
+    assert response.status_code == 429
+    assert calls == 3
+    assert sleep_calls == [3.0, 6.0]
 
 
 class FixedDate(date):
@@ -1203,6 +1284,42 @@ def test_fetch_point_in_time_corpus_fetches_requested_legislation_types(monkeypa
     assert paths == [
         tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2025" / "1" / "data.xml",
         tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi" / "2026" / "1" / "data.xml",
+    ]
+
+
+def test_fetch_point_in_time_corpus_respects_closed_series_end_years(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, int, bool, str | None, Path]] = []
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_START_YEARS", {"aip": 1799})
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.POINT_IN_TIME_CORPUS_END_YEARS", {"aip": 1800})
+
+    def fake_fetch_year_documents(
+        client: httpx.Client,
+        legislation_type: str,
+        year: int,
+        as_enacted: bool = False,
+        at: str | None = None,
+        output_root: Path = tmp_path,
+        log: object = None,
+    ) -> list[Path]:
+        calls.append((legislation_type, year, as_enacted, at, output_root))
+        return [output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "1" / "data.xml"]
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.fetch_year_documents", fake_fetch_year_documents)
+
+    paths = fetch_point_in_time_corpus(
+        httpx.Client(),
+        at="2026-05-03",
+        legislation_types=("aip",),
+        output_root=tmp_path,
+    )
+
+    assert calls == [
+        ("aip", 1799, False, "2026-05-03", tmp_path),
+        ("aip", 1800, False, "2026-05-03", tmp_path),
+    ]
+    assert paths == [
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "aip" / "1799" / "1" / "data.xml",
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "aip" / "1800" / "1" / "data.xml",
     ]
 
 

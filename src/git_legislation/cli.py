@@ -54,7 +54,7 @@ def fetch_xml(
     at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         content = fetch_document_xml(
             client,
             legislation_type=legislation_type,
@@ -84,7 +84,7 @@ def fetch_source_xml(
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
     document = document_ref_from_source_path(source_path)
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         content = fetch_document_ref_xml(
             client,
             document=document,
@@ -192,7 +192,7 @@ def clean_point_in_time_xml_command(
 
 @app.command("list-year")
 def list_year(legislation_type: str, year: int) -> None:
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year)
 
     for document in documents:
@@ -207,7 +207,7 @@ def fetch_year(
     at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
     output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         paths = fetch_year_documents(
             client,
             legislation_type=legislation_type,
@@ -236,7 +236,7 @@ def fetch_enacted_corpus_command(
         start_year=start_year,
         end_year=end_year or date.today().year,
     )
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         fetch_enacted_corpus(
             client,
             legislation_type=legislation_type,
@@ -267,7 +267,7 @@ def fetch_point_in_time_corpus_command(
 ) -> None:
     snapshot_date = at or date.today().isoformat()
     report = FetchReport.point_in_time_corpus(at=snapshot_date)
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         fetch_point_in_time_corpus(
             client,
             at=at,
@@ -289,7 +289,7 @@ def probe_fetch_failures(
     ] = None,
 ) -> None:
     report = read_fetch_report(report_path)
-    with create_client() as client:
+    with create_client(log=typer.echo) as client:
         probed = probe_fetch_report_failures(
             client,
             report,

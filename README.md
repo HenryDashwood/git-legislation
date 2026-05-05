@@ -47,9 +47,10 @@ The repository now has a working Python CLI for the first end-to-end corpus path
 3. Resume idempotently by skipping valid XML files that already exist.
 4. Reject bad successful responses, such as HTML “Multiple Choices” pages saved as `.xml`.
 5. Record fetch reports, fetch failures, and fallback probes.
-6. Convert fetched CLML XML into Markdown.
-7. Convert metadata-only XML into Markdown stubs with PDF links, rather than treating those records as total failures.
-8. Continue after conversion failures and write conversion reports.
+6. Back off and retry HTTP `429` rate-limit responses before carrying on.
+7. Convert fetched CLML XML into Markdown.
+8. Convert metadata-only XML into Markdown stubs with PDF links, rather than treating those records as total failures.
+9. Continue after conversion failures and write conversion reports.
 
 The current working corpus path is:
 
@@ -276,6 +277,7 @@ Configured non-draft corpus types:
 - devolved and Northern Ireland primary types: `asp`, `mwa`, `anaw`, `asc`, `apni`, `mnia`, `nia`
 - secondary types: `uksi`, `ssi`, `wsi`, `nisr`, `nisro`, `nisi`, `ukcm`, `ukci`, `ukmo`
 - draft legislation types remain out of the default corpus because they are not enacted or made law
+- closed historical series have configured end years, so the fetcher does not probe irrelevant modern years
 
 Plan:
 

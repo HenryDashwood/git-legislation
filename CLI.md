@@ -177,6 +177,8 @@ https://www.legislation.gov.uk/ukla/1803/101-200/data.feed
 
 For large or paginated years, the command also logs feed progress while it is still inside a year, including split range totals and every additional feed page read.
 
+If legislation.gov.uk returns HTTP `429` rate-limit responses, the client backs off and retries before treating the request as failed. It honors `Retry-After` when the server provides it, otherwise it uses exponential backoff.
+
 ### `fetch-point-in-time-corpus`
 
 Fetch latest/current XML for every supported corpus type and store it under today's snapshot date.
@@ -248,7 +250,7 @@ asc    Acts of Senedd Cymru
 ukmo   UK Ministerial Orders
 ```
 
-Draft legislation types are intentionally not included in the default corpus because they are not enacted or made law. Each supported type has its own configured crawl start year.
+Draft legislation types are intentionally not included in the default corpus because they are not enacted or made law. Each supported type has its own configured crawl start year, and closed historical series such as `aep`, `aip`, `apgb`, `gbla`, `gbppa`, `aosp`, `apni`, and `mnia` also have configured end years.
 
 If no `--legislation-type` is passed, the command fetches every supported type.
 
