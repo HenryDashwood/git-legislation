@@ -210,18 +210,20 @@ def test_convert_enacted_corpus_command_converts_fetched_tree(monkeypatch, tmp_p
 
 
 def test_convert_point_in_time_corpus_command_converts_fetched_tree(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
+    calls: dict[str, object] = {"convert_xml_tree_args": [], "write_conversion_report_args": []}
+    (tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga").mkdir(parents=True)
+    (tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi").mkdir(parents=True)
 
     def fake_convert_xml_tree(xml_root: Path, output_root: Path, report: object, log: object) -> list[Path]:
-        calls["convert_xml_tree_args"] = (xml_root, output_root, report, log)
+        calls["convert_xml_tree_args"].append((xml_root, output_root, report, log))
         return [
-            output_root / "markdown" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14.md",
-            output_root / "markdown" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "13.md",
+            output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026" / "14.md",
+            output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026" / "13.md",
         ]
 
     def fake_write_conversion_report(report: object, output_root: Path) -> Path:
-        calls["write_conversion_report_args"] = (report, output_root)
-        return output_root / "reports" / "convert" / "point-in-time" / "2026-05-03" / "ukpga.json"
+        calls["write_conversion_report_args"].append((report, output_root))
+        return output_root / "reports" / "convert" / "point-in-time" / "2026-05-03" / f"{report.legislation_type}.json"
 
     monkeypatch.setattr("git_legislation.cli.convert_xml_tree", fake_convert_xml_tree)
     monkeypatch.setattr("git_legislation.cli.write_conversion_report", fake_write_conversion_report)
@@ -232,15 +234,62 @@ def test_convert_point_in_time_corpus_command_converts_fetched_tree(monkeypatch,
     )
 
     assert result.exit_code == 0
-    xml_root, output_root, report, log = calls["convert_xml_tree_args"]
-    assert (xml_root, output_root) == (tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga", tmp_path)
-    assert report.mode == "point-in-time"
-    assert report.legislation_type == "ukpga"
-    assert report.at == "2026-05-03"
-    assert log is typer.echo
-    assert calls["write_conversion_report_args"] == (report, tmp_path)
+    assert len(calls["convert_xml_tree_args"]) == 2
+    first_xml_root, first_output_root, first_report, first_log = calls["convert_xml_tree_args"][0]
+    second_xml_root, second_output_root, second_report, second_log = calls["convert_xml_tree_args"][1]
+    assert (first_xml_root, first_output_root) == (
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga",
+        tmp_path,
+    )
+    assert (second_xml_root, second_output_root) == (
+        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi",
+        tmp_path,
+    )
+    assert first_report.mode == "point-in-time"
+    assert first_report.legislation_type == "ukpga"
+    assert first_report.at == "2026-05-03"
+    assert first_log is typer.echo
+    assert second_report.legislation_type == "uksi"
+    assert second_log is typer.echo
+    assert calls["write_conversion_report_args"] == [(first_report, tmp_path), (second_report, tmp_path)]
     assert "Converted point-in-time ukpga at 2026-05-03: 2 documents, 0 failures" in result.output
     assert "reports/convert/point-in-time/2026-05-03/ukpga.json" in result.output
+    assert "Converted point-in-time uksi at 2026-05-03: 2 documents, 0 failures" in result.output
+    assert "reports/convert/point-in-time/2026-05-03/uksi.json" in result.output
+
+
+def test_convert_point_in_time_corpus_command_accepts_legislation_type_options(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {"convert_xml_tree_args": []}
+
+    def fake_convert_xml_tree(xml_root: Path, output_root: Path, report: object, log: object) -> list[Path]:
+        calls["convert_xml_tree_args"].append((xml_root, output_root, report, log))
+        return [output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026.md"]
+
+    def fake_write_conversion_report(report: object, output_root: Path) -> Path:
+        return output_root / "reports" / "convert" / "point-in-time" / "2026-05-03" / f"{report.legislation_type}.json"
+
+    monkeypatch.setattr("git_legislation.cli.convert_xml_tree", fake_convert_xml_tree)
+    monkeypatch.setattr("git_legislation.cli.write_conversion_report", fake_write_conversion_report)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "convert-point-in-time-corpus",
+            "--at",
+            "2026-05-03",
+            "--legislation-type",
+            "ukla",
+            "--legislation-type",
+            "uksi",
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert [call[2].legislation_type for call in calls["convert_xml_tree_args"]] == ["ukla", "uksi"]
+    assert "Converted point-in-time ukla at 2026-05-03: 1 documents, 0 failures" in result.output
+    assert "Converted point-in-time uksi at 2026-05-03: 1 documents, 0 failures" in result.output
 
 
 def test_audit_point_in_time_coverage_command_prints_summary(monkeypatch, tmp_path: Path) -> None:
@@ -267,6 +316,32 @@ def test_audit_point_in_time_coverage_command_prints_summary(monkeypatch, tmp_pa
     assert calls["audit_args"] == ("2026-05-03", "ukpga", tmp_path)
     assert calls["render_args"] is audit
     assert "Coverage audit for ukpga at 2026-05-03" in result.output
+
+
+def test_audit_all_point_in_time_coverage_command_prints_aggregate_summary(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+    audits = [SimpleNamespace(legislation_type="ukpga"), SimpleNamespace(legislation_type="uksi")]
+
+    def fake_audit_all_point_in_time_coverage(at: str, output_root: Path, log: object) -> object:
+        calls["audit_args"] = (at, output_root, log)
+        return audits
+
+    def fake_render_aggregate_coverage_audit(rendered_audits: object, at: str) -> str:
+        calls["render_args"] = (rendered_audits, at)
+        return "Coverage audit for all legislation types at 2026-05-03"
+
+    monkeypatch.setattr("git_legislation.cli.audit_all_point_in_time_coverage", fake_audit_all_point_in_time_coverage)
+    monkeypatch.setattr("git_legislation.cli.render_aggregate_coverage_audit", fake_render_aggregate_coverage_audit)
+
+    result = CliRunner().invoke(
+        app,
+        ["audit-all-point-in-time-coverage", "--at", "2026-05-03", "--output-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert calls["audit_args"] == ("2026-05-03", tmp_path, typer.echo)
+    assert calls["render_args"] == (audits, "2026-05-03")
+    assert "Coverage audit for all legislation types at 2026-05-03" in result.output
 
 
 def test_point_in_time_failures_command_prints_details(monkeypatch, tmp_path: Path) -> None:

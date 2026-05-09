@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 
 from coverage_audit import (
+    audit_all_point_in_time_coverage,
     audit_point_in_time_coverage,
     clean_point_in_time_xml,
     find_point_in_time_xml_problems,
+    render_aggregate_coverage_audit,
     render_cleanup_result,
     render_coverage_audit,
     render_point_in_time_failure_details,
@@ -62,11 +64,22 @@ def test_audit_point_in_time_coverage_counts_reports_and_local_files(tmp_path: P
     fetch_report.write_text(
         json.dumps(
             {
-                "fetched": ["a", "b"],
+                "fetched": [
+                    str(tmp_path / "xml" / "point-in-time" / "2026-05-04" / "ukpga" / "2026" / "14" / "data.xml"),
+                    str(tmp_path / "xml" / "point-in-time" / "2026-05-04" / "ukpga" / "1963" / "1" / "data.xml"),
+                    str(tmp_path / "xml" / "point-in-time" / "2026-05-04" / "ukpga" / "1963" / "1" / "data.xml"),
+                    str(tmp_path / "xml" / "point-in-time" / "2026-05-04" / "uksi" / "2026" / "1" / "data.xml"),
+                ],
                 "failures": [
                     {
                         "stage": "document",
+                        "legislation_type": "ukpga",
                         "error": "Response from https://example.test/data.xml is 'html', not legislation XML",
+                    },
+                    {
+                        "stage": "document",
+                        "legislation_type": "uksi",
+                        "error": "HTTP status 404",
                     }
                 ],
             }
@@ -109,6 +122,58 @@ def test_render_coverage_audit_outputs_human_summary(tmp_path: Path) -> None:
     assert "fetch report:" in summary
     assert "expected documents from fetch report: 0" in summary
     assert "valid legislation XML: 0" in summary
+
+
+def test_audit_all_point_in_time_coverage_discovers_type_directories(tmp_path: Path) -> None:
+    ukpga_xml_root = tmp_path / "xml" / "point-in-time" / "2026-05-04" / "ukpga" / "2026" / "14"
+    uksi_xml_root = tmp_path / "xml" / "point-in-time" / "2026-05-04" / "uksi" / "2026" / "1"
+    ukpga_markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-04" / "ukpga" / "2026"
+    fetch_report = tmp_path / "reports" / "fetch" / "point-in-time" / "2026-05-04.json"
+    ukpga_convert_report = tmp_path / "reports" / "convert" / "point-in-time" / "2026-05-04" / "ukpga.json"
+    uksi_convert_report = tmp_path / "reports" / "convert" / "point-in-time" / "2026-05-04" / "uksi.json"
+
+    ukpga_xml_root.mkdir(parents=True)
+    uksi_xml_root.mkdir(parents=True)
+    ukpga_markdown_root.mkdir(parents=True)
+    fetch_report.parent.mkdir(parents=True)
+    ukpga_convert_report.parent.mkdir(parents=True)
+    uksi_convert_report.parent.mkdir(parents=True, exist_ok=True)
+
+    (ukpga_xml_root / "data.xml").write_text(FULL_TEXT_XML)
+    (uksi_xml_root / "data.xml").write_text(METADATA_ONLY_XML.replace("/ukpga/", "/uksi/"))
+    (ukpga_markdown_root / "14.md").write_text("# Example Act\n")
+    fetch_report.write_text(
+        json.dumps(
+            {
+                "fetched": [
+                    str(ukpga_xml_root / "data.xml"),
+                    str(uksi_xml_root / "data.xml"),
+                    str(uksi_xml_root / "data.xml"),
+                ],
+                "failures": [
+                    {
+                        "stage": "document",
+                        "legislation_type": "uksi",
+                        "error": "HTTP status 404",
+                    }
+                ],
+            }
+        )
+    )
+    ukpga_convert_report.write_text(json.dumps({"converted_paths": [str(ukpga_markdown_root / "14.md")]}))
+    uksi_convert_report.write_text(json.dumps({"converted_paths": [], "failures": [{"error": "example failure"}]}))
+
+    audits = audit_all_point_in_time_coverage(at="2026-05-04", output_root=tmp_path)
+    summary = render_aggregate_coverage_audit(audits, at="2026-05-04")
+
+    assert [audit.legislation_type for audit in audits] == ["ukpga", "uksi"]
+    assert "Coverage audit for all legislation types at 2026-05-04" in summary
+    assert "ukpga | 1 | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 0" in summary
+    assert "uksi | 2 | 1 | 0 | 1 | 0 | 1 | 1 | 0 | 1" in summary
+    assert "expected documents from fetch report: 3" in summary
+    assert "valid legislation XML: 2" in summary
+    assert "conversion failures: 1" in summary
+    assert "valid XML without Markdown: 1" in summary
 
 
 def test_find_and_clean_point_in_time_xml_problems(tmp_path: Path) -> None:
@@ -171,10 +236,19 @@ def test_render_point_in_time_failure_details_lists_fetch_and_conversion_failure
                 "failures": [
                     {
                         "stage": "document",
+                        "legislation_type": "ukpga",
                         "year": 2006,
                         "number": 46,
                         "url": "https://www.legislation.gov.uk/ukpga/2006/46/data.xml",
                         "error": "Response was not parseable legislation XML",
+                    },
+                    {
+                        "stage": "document",
+                        "legislation_type": "uksi",
+                        "year": 2006,
+                        "number": 1,
+                        "url": "https://www.legislation.gov.uk/uksi/2006/1/data.xml",
+                        "error": "HTTP status 404",
                     }
                 ]
             }
@@ -201,5 +275,6 @@ def test_render_point_in_time_failure_details_lists_fetch_and_conversion_failure
     assert "Failure details for ukpga at 2026-05-04" in details
     assert "Fetch failures:" in details
     assert "document 2006/46: Response was not parseable legislation XML" in details
+    assert "document 2006/1: HTTP status 404" not in details
     assert "Conversion failures:" in details
     assert "ukpga/2006/46: no element found: line 1, column 0" in details

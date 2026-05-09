@@ -12,8 +12,10 @@ from converters.clmltomarkdown import (
     write_conversion_report,
 )
 from coverage_audit import (
+    audit_all_point_in_time_coverage,
     audit_point_in_time_coverage,
     clean_point_in_time_xml,
+    render_aggregate_coverage_audit,
     render_cleanup_result,
     render_coverage_audit,
     render_point_in_time_failure_details,
@@ -132,22 +134,48 @@ def convert_enacted_corpus(
 @app.command("convert-point-in-time-corpus")
 def convert_point_in_time_corpus(
     at: Annotated[str, typer.Option("--at", help="Snapshot date to convert as YYYY-MM-DD.")],
-    legislation_type: Annotated[str, typer.Option(help="Legislation type to convert.")] = "ukpga",
+    legislation_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--legislation-type",
+            help="Legislation type to convert. Repeat to convert more than one. Defaults to every fetched type.",
+        ),
+    ] = None,
     output_root: Annotated[
         Path, typer.Option(help="Root folder for converter input and output.")
     ] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    report = ConversionReport.point_in_time(legislation_type=legislation_type, at=at)
-    paths = convert_xml_tree(
-        output_root / "xml" / "point-in-time" / at / legislation_type,
+    for legislation_type in _point_in_time_legislation_types_to_convert(
+        at=at,
+        legislation_types=legislation_types,
         output_root=output_root,
-        report=report,
-        log=typer.echo,
-    )
-    typer.echo(
-        f"Converted point-in-time {legislation_type} at {at}: {len(paths)} documents, {len(report.failures)} failures"
-    )
-    typer.echo(write_conversion_report(report, output_root=output_root))
+    ):
+        report = ConversionReport.point_in_time(legislation_type=legislation_type, at=at)
+        paths = convert_xml_tree(
+            output_root / "xml" / "point-in-time" / at / legislation_type,
+            output_root=output_root,
+            report=report,
+            log=typer.echo,
+        )
+        typer.echo(
+            f"Converted point-in-time {legislation_type} at {at}: "
+            f"{len(paths)} documents, {len(report.failures)} failures"
+        )
+        typer.echo(write_conversion_report(report, output_root=output_root))
+
+
+def _point_in_time_legislation_types_to_convert(
+    at: str,
+    legislation_types: list[str] | None,
+    output_root: Path,
+) -> list[str]:
+    if legislation_types:
+        return legislation_types
+
+    xml_root = output_root / "xml" / "point-in-time" / at
+    if not xml_root.exists():
+        return []
+    return sorted(path.name for path in xml_root.iterdir() if path.is_dir())
 
 
 @app.command("audit-point-in-time-coverage")
@@ -158,6 +186,15 @@ def audit_point_in_time_coverage_command(
 ) -> None:
     audit = audit_point_in_time_coverage(at=at, legislation_type=legislation_type, output_root=output_root)
     typer.echo(render_coverage_audit(audit))
+
+
+@app.command("audit-all-point-in-time-coverage")
+def audit_all_point_in_time_coverage_command(
+    at: Annotated[str, typer.Option("--at", help="Snapshot date to audit as YYYY-MM-DD.")],
+    output_root: Annotated[Path, typer.Option(help="Root folder for audit input.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    audits = audit_all_point_in_time_coverage(at=at, output_root=output_root, log=typer.echo)
+    typer.echo(render_aggregate_coverage_audit(audits, at=at))
 
 
 @app.command("point-in-time-failures")

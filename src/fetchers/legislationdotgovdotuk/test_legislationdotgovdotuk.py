@@ -777,7 +777,7 @@ def test_write_source_document_xml_writes_point_in_time_xml(tmp_path: Path) -> N
 def test_format_xml_preserves_xml_declaration() -> None:
     assert (
         format_xml(b'<?xml version="1.0" encoding="utf-8"?><Legislation><Body>example</Body></Legislation>')
-        == b"<?xml version='1.0' encoding='utf-8'?>\n<Legislation>\n\t<Body>example</Body>\n</Legislation>\n"
+        == b'<?xml version="1.0" encoding="utf-8"?>\n<Legislation>\n\t<Body>example</Body>\n</Legislation>\n'
     )
 
 
@@ -1476,6 +1476,16 @@ def test_write_fetch_report_writes_json_report(tmp_path: Path) -> None:
     assert path == tmp_path / "reports" / "fetch" / "enacted" / "ukpga" / "2025-2026.json"
     assert '"mode": "enacted"' in path.read_text()
     assert '"status_code": 404' in path.read_text()
+
+
+def test_fetch_report_deduplicates_fetched_paths(tmp_path: Path) -> None:
+    report = FetchReport.point_in_time_corpus(at="2026-05-03")
+    path = tmp_path / "xml" / "point-in-time" / "2026-05-03" / "wsi" / "2026" / "1" / "data.xml"
+
+    report.record_fetched(path)
+    report.record_fetched(path)
+
+    assert report.fetched_paths == [path]
 
 
 def test_write_fetch_report_includes_failure_probes(tmp_path: Path) -> None:

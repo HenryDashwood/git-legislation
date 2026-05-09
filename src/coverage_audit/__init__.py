@@ -1,5 +1,6 @@
 import json
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -65,6 +66,19 @@ class CleanupResult:
     dry_run: bool
 
 
+def audit_all_point_in_time_coverage(
+    at: str,
+    output_root: Path = Path("output"),
+    log: Callable[[str], None] | None = None,
+) -> list[CoverageAudit]:
+    audits: list[CoverageAudit] = []
+    for legislation_type in _point_in_time_legislation_types(at=at, output_root=output_root):
+        if log is not None:
+            log(f"Auditing point-in-time {legislation_type} at {at}")
+        audits.append(audit_point_in_time_coverage(at=at, legislation_type=legislation_type, output_root=output_root))
+    return audits
+
+
 def audit_point_in_time_coverage(
     at: str,
     legislation_type: str = "ukpga",
@@ -78,8 +92,14 @@ def audit_point_in_time_coverage(
     fetch_report = _read_json(fetch_report_path)
     convert_report = _read_json(convert_report_path)
     xml_counts = _scan_xml_tree(xml_root)
-    fetched = _json_list(fetch_report, "fetched") if fetch_report is not None else []
-    fetch_failures = _json_list(fetch_report, "failures") if fetch_report is not None else []
+    fetched = _filter_fetch_paths_by_legislation_type(
+        _unique_items(_json_list(fetch_report, "fetched") if fetch_report is not None else []),
+        legislation_type=legislation_type,
+    )
+    fetch_failures = _filter_fetch_failures_by_legislation_type(
+        _json_list(fetch_report, "failures") if fetch_report is not None else [],
+        legislation_type=legislation_type,
+    )
     converted_paths = _json_list(convert_report, "converted_paths") if convert_report is not None else []
     convert_failures = _json_list(convert_report, "failures") if convert_report is not None else []
 
@@ -149,7 +169,10 @@ def render_point_in_time_failure_details(
 
     lines = [f"Failure details for {legislation_type} at {at}", ""]
     lines.append(f"Fetch report: {_path_status(fetch_report_path, fetch_report is not None)}")
-    fetch_failures = _json_list(fetch_report, "failures") if fetch_report is not None else []
+    fetch_failures = _filter_fetch_failures_by_legislation_type(
+        _json_list(fetch_report, "failures") if fetch_report is not None else [],
+        legislation_type=legislation_type,
+    )
     if fetch_failures:
         lines.append("Fetch failures:")
         lines.extend(_format_fetch_failure(failure) for failure in fetch_failures)
@@ -209,6 +232,65 @@ def render_coverage_audit(audit: CoverageAudit) -> str:
     return "\n".join(lines)
 
 
+def render_aggregate_coverage_audit(audits: list[CoverageAudit], at: str) -> str:
+    lines = [
+        f"Coverage audit for all legislation types at {at}",
+        "",
+        " | ".join(
+            [
+                "Type",
+                "Expected",
+                "XML",
+                "Full text",
+                "Metadata-only",
+                "Markdown",
+                "Fetch failures",
+                "Convert failures",
+                "XML problems",
+                "MD gap",
+            ]
+        ),
+        "--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---:",
+    ]
+
+    for audit in audits:
+        lines.append(
+            " | ".join(
+                [
+                    audit.legislation_type,
+                    str(audit.expected_from_fetch_report),
+                    str(audit.valid_legislation_xml),
+                    str(audit.full_text_xml),
+                    str(audit.metadata_only_xml),
+                    str(audit.markdown_files),
+                    str(audit.fetch_report_failures),
+                    str(audit.convert_report_failures),
+                    str(audit.local_xml_problem_count),
+                    str(audit.markdown_gap_against_valid_xml),
+                ]
+            )
+        )
+
+    totals = _sum_audits(audits)
+    lines.extend(
+        [
+            "",
+            "Totals",
+            f"- expected documents from fetch report: {totals.expected_from_fetch_report}",
+            f"- valid legislation XML: {totals.valid_legislation_xml}",
+            f"- full-text XML: {totals.full_text_xml}",
+            f"- metadata-only XML: {totals.metadata_only_xml}",
+            f"- Markdown files: {totals.markdown_files}",
+            f"- fetch failures: {totals.fetch_report_failures}",
+            f"- conversion failures: {totals.convert_report_failures}",
+            f"- local XML problems: {totals.local_xml_problem_count}",
+            f"- valid XML without Markdown: {totals.markdown_gap_against_valid_xml}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
 def _read_json(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
@@ -218,6 +300,76 @@ def _read_json(path: Path) -> dict[str, object] | None:
 def _json_list(data: dict[str, object], key: str) -> list[object]:
     value = data.get(key, [])
     return cast("list[object]", value) if isinstance(value, list) else []
+
+
+def _unique_items(items: list[object]) -> list[object]:
+    return list(dict.fromkeys(str(item) for item in items))
+
+
+def _point_in_time_legislation_types(at: str, output_root: Path) -> list[str]:
+    xml_root = output_root / "xml" / "point-in-time" / at
+    if not xml_root.exists():
+        return []
+    return sorted(path.name for path in xml_root.iterdir() if path.is_dir())
+
+
+def _sum_audits(audits: list[CoverageAudit]) -> CoverageAudit:
+    return CoverageAudit(
+        at=audits[0].at if audits else "",
+        legislation_type="all",
+        xml_root=Path(),
+        markdown_root=Path(),
+        fetch_report_path=Path(),
+        convert_report_path=Path(),
+        fetch_report_exists=any(audit.fetch_report_exists for audit in audits),
+        convert_report_exists=any(audit.convert_report_exists for audit in audits),
+        fetch_report_fetched=sum(audit.fetch_report_fetched for audit in audits),
+        fetch_report_failures=sum(audit.fetch_report_failures for audit in audits),
+        convert_report_converted=sum(audit.convert_report_converted for audit in audits),
+        convert_report_failures=sum(audit.convert_report_failures for audit in audits),
+        xml_files=sum(audit.xml_files for audit in audits),
+        valid_legislation_xml=sum(audit.valid_legislation_xml for audit in audits),
+        metadata_only_xml=sum(audit.metadata_only_xml for audit in audits),
+        full_text_xml=sum(audit.full_text_xml for audit in audits),
+        pdf_linked_xml=sum(audit.pdf_linked_xml for audit in audits),
+        empty_xml=sum(audit.empty_xml for audit in audits),
+        malformed_xml=sum(audit.malformed_xml for audit in audits),
+        non_legislation_xml=sum(audit.non_legislation_xml for audit in audits),
+        markdown_files=sum(audit.markdown_files for audit in audits),
+    )
+
+
+def _filter_fetch_paths_by_legislation_type(paths: list[object], legislation_type: str) -> list[object]:
+    return [path for path in paths if _path_matches_legislation_type(path, legislation_type=legislation_type)]
+
+
+def _filter_fetch_failures_by_legislation_type(failures: list[object], legislation_type: str) -> list[object]:
+    return [
+        failure
+        for failure in failures
+        if _failure_matches_legislation_type(failure, legislation_type=legislation_type)
+    ]
+
+
+def _path_matches_legislation_type(path: object, legislation_type: str) -> bool:
+    parts = Path(str(path)).parts
+    for index, part in enumerate(parts):
+        if part == "point-in-time" and index + 2 < len(parts):
+            return parts[index + 2] == legislation_type
+    return any(part == legislation_type for part in parts)
+
+
+def _failure_matches_legislation_type(failure: object, legislation_type: str) -> bool:
+    if not isinstance(failure, dict):
+        return False
+    failure_data = cast("dict[str, object]", failure)
+    explicit_type = failure_data.get("legislation_type")
+    if explicit_type is not None:
+        return explicit_type == legislation_type
+    url = failure_data.get("url")
+    if url is not None:
+        return f"/{legislation_type}/" in str(url)
+    return False
 
 
 def _scan_xml_tree(xml_root: Path) -> dict[str, int]:

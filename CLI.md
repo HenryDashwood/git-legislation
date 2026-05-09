@@ -420,16 +420,31 @@ output/markdown/enacted/ukpga/Vict/1-2/42.md
 
 ### `convert-point-in-time-corpus`
 
-Convert all fetched point-in-time XML for one snapshot date and legislation type.
+Convert all fetched point-in-time XML for one snapshot date.
 
 ```bash
 uv run git-legislation convert-point-in-time-corpus --at 2026-05-03
 ```
 
-The legislation type defaults to `ukpga`. Override it with:
+If no `--legislation-type` is passed, the command converts every legislation type directory found under:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/
+```
+
+Limit conversion to one type with:
 
 ```bash
 uv run git-legislation convert-point-in-time-corpus --at 2026-05-03 --legislation-type ukla
+```
+
+Convert more than one type by repeating the option:
+
+```bash
+uv run git-legislation convert-point-in-time-corpus \
+  --at 2026-05-03 \
+  --legislation-type ukpga \
+  --legislation-type uksi
 ```
 
 Input XML:
@@ -450,7 +465,7 @@ Conversion report:
 output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
 ```
 
-The corpus converters log periodic checkpoints, continue after malformed or unsupported XML files, and write failures to the conversion report with the input path, inferred source path, and error message.
+The corpus converters are idempotent: they render deterministic Markdown and overwrite each type's conversion report, so rerunning the command is safe. They log periodic checkpoints, continue after malformed or unsupported XML files, and write failures to the conversion report with the input path, inferred source path, and error message.
 
 ### `audit-point-in-time-coverage`
 
@@ -476,6 +491,24 @@ output/markdown/point-in-time/{yyyy-mm-dd}/{type}/**/*.md
 ```
 
 It reports expected documents from the fetch report, valid legislation XML, full-text XML, metadata-only XML, PDF-linked XML, local XML problems, Markdown file counts, conversion failures, and grouped failure categories.
+
+### `audit-all-point-in-time-coverage`
+
+Summarize fetch, XML, Markdown, and conversion coverage across every legislation type fetched for one snapshot date.
+
+```bash
+uv run git-legislation audit-all-point-in-time-coverage --at 2026-05-05
+```
+
+This discovers legislation types from:
+
+```text
+output/xml/point-in-time/{yyyy-mm-dd}/{type}/
+```
+
+It logs progress as it audits each type, then prints a table with expected documents, valid XML, full-text XML, metadata-only XML, Markdown files, fetch failures, conversion failures, local XML problems, and Markdown gaps for each type. It also prints totals across all discovered types.
+
+Use `audit-point-in-time-coverage --legislation-type {type}` when you need the more detailed breakdown for a single type.
 
 ### `point-in-time-failures`
 

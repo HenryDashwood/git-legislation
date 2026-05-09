@@ -4,18 +4,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
-from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 import httpx
-
-etree: Any = import_module("lxml.etree")
+from xmlformatter import Formatter
 
 
 @dataclass(frozen=True)
@@ -156,7 +154,8 @@ class FetchReport:
         )
 
     def record_fetched(self, path: Path) -> None:
-        self.fetched_paths.append(path)
+        if path not in self.fetched_paths:
+            self.fetched_paths.append(path)
 
     def record_failure(self, failure: FetchFailure) -> None:
         self.failures.append(failure)
@@ -1082,8 +1081,5 @@ def write_document_xml(
 
 
 def format_xml(content: bytes) -> bytes:
-    has_xml_declaration = content.lstrip().startswith(b"<?xml")
-    parser = etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True)
-    document = etree.fromstring(content, parser).getroottree()
-    etree.indent(document, space="\t")
-    return etree.tostring(document, encoding="utf-8", xml_declaration=has_xml_declaration) + b"\n"
+    formatter = Formatter(indent=1, indent_char="\t", selfclose=True, eof_newline=True)
+    return formatter.format_string(content)

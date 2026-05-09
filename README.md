@@ -66,6 +66,8 @@ uv run git-legislation fetch-point-in-time-corpus --legislation-type ukla
 uv run git-legislation fetch-point-in-time-corpus --legislation-type ukpga --legislation-type asp --legislation-type uksi
 ```
 
+The converter follows the same shape: no type converts every fetched type directory for the snapshot, while repeated `--legislation-type` options limit the run.
+
 Default output is under:
 
 ```text
