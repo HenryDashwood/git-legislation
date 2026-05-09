@@ -51,6 +51,7 @@ The repository now has a working Python CLI for the first end-to-end corpus path
 7. Convert fetched CLML XML into Markdown.
 8. Convert metadata-only XML into Markdown stubs with PDF links, rather than treating those records as total failures.
 9. Continue after conversion failures and write conversion reports.
+10. Audit coverage across one type or all fetched types, including XML validity, full-text versus metadata-only XML, Markdown coverage, fetch failures, conversion failures, and local XML problems.
 
 The current working corpus path is:
 
@@ -66,7 +67,7 @@ uv run git-legislation fetch-point-in-time-corpus --legislation-type ukla
 uv run git-legislation fetch-point-in-time-corpus --legislation-type ukpga --legislation-type asp --legislation-type uksi
 ```
 
-The converter follows the same shape: no type converts every fetched type directory for the snapshot, while repeated `--legislation-type` options limit the run.
+The converter and coverage audit follow the same shape: omitting a type processes every fetched type directory for the snapshot, while `--legislation-type` limits a run to selected types where the command supports it.
 
 Default output is under:
 
@@ -77,7 +78,16 @@ output/reports/fetch/point-in-time/{yyyy-mm-dd}.json
 output/reports/convert/point-in-time/{yyyy-mm-dd}/{type}.json
 ```
 
-This is not yet “every UK law in Markdown”. The most validated path is currently the current-date `ukpga` corpus, with full Markdown where CLML body text exists and metadata stubs where the source only exposes metadata and PDF alternatives. The fetcher now knows the official non-draft legislation.gov.uk type codes in scope for the project, but those types still need coverage audits and converter hardening.
+This is not yet “every UK law in full-text Markdown”. The broad current-law corpus has been fetched and converted across configured non-draft types, with full Markdown where CLML body text exists and metadata stubs where the source only exposes metadata and PDF alternatives. The remaining coverage gap is mostly content depth rather than pipeline failure: many official XML responses are metadata-only records with PDF alternatives, so their generated Markdown is a stub until PDF extraction exists. For XML records that contain CLML body text, conversion currently completes without reported failures, but Markdown quality still needs an explicit structural audit before publication.
+
+Configured non-draft corpus types:
+
+- pre-UK and historical primary types: `aep`, `aosp`, `aip`, `apgb`, `gbppa`, `gbla`
+- UK Parliament primary types: `ukpga`, `ukla`, `ukppa`
+- devolved and Northern Ireland primary types: `asp`, `mwa`, `anaw`, `asc`, `apni`, `mnia`, `nia`
+- secondary types: `uksi`, `ssi`, `wsi`, `nisr`, `nisro`, `nisi`, `ukcm`, `ukci`, `ukmo`
+- draft legislation types remain out of the default corpus because they are not enacted or made law
+- closed historical series have configured end years, so the fetcher does not probe irrelevant modern years
 
 ## V1 Scope
 
@@ -247,46 +257,26 @@ See [CLI](CLI.md) for current command usage.
 
 See also [Repo Structure And Tech Stack](docs/repo-structure-and-tech-stack.md) for the proposed Python CLI architecture, generated legislation layout, storage approach, and testing strategy.
 
-### Done: Source Discovery And `ukpga` Prototype
+### Next: Markdown Quality Audit
 
-- Fetch targeted documents and year feeds from legislation.gov.uk.
-- Fetch current `ukpga` corpus snapshots into dated output folders.
-- Preserve regnal-year source paths such as `ukpga/Geo3/41/52`.
-- Write fetch reports with successes, failures, probes, and fallback classifications.
-- Make corpus fetching idempotent for valid local XML.
-- Reject HTML and malformed responses instead of writing them as XML.
-- Add timeout/retry behavior for transient network errors.
-- Convert a current `ukpga` snapshot to Markdown with conversion reports.
-- Convert metadata-only XML into Markdown stubs with PDF links.
+Goal: prove that generated Markdown is not merely present, but structurally useful enough to publish.
 
-### Done: Coverage Audit
-
-- Add a report summary command for fetch and conversion reports.
-- Count expected feed entries versus valid XML files versus Markdown files.
-- Separate expected source limitations from true tool failures.
-- Track metadata-only documents and PDF alternatives as first-class coverage categories.
-- Detect empty, malformed, or HTML local files and offer a cleanup command.
-- Print detailed fetch and conversion failures for a snapshot.
-
-### In Progress: Expand Beyond `ukpga`
-
-Goal: generalize the corpus pipeline across legislation.gov.uk type codes.
-
-Configured non-draft corpus types:
-
-- pre-UK and historical primary types: `aep`, `aosp`, `aip`, `apgb`, `gbppa`, `gbla`
-- UK Parliament primary types: `ukpga`, `ukla`, `ukppa`
-- devolved and Northern Ireland primary types: `asp`, `mwa`, `anaw`, `asc`, `apni`, `mnia`, `nia`
-- secondary types: `uksi`, `ssi`, `wsi`, `nisr`, `nisro`, `nisi`, `ukcm`, `ukci`, `ukmo`
-- draft legislation types remain out of the default corpus because they are not enacted or made law
-- closed historical series have configured end years, so the fetcher does not probe irrelevant modern years
-
-Plan:
-
-1. Test representative year feeds for each configured type.
-2. Add CLI options to convert, audit, clean, and inspect one type, selected types, or all supported types.
-3. Keep per-type conversion reports and decide whether fetch reports should split by type as the corpus widens.
-4. Expand output corpus type by type, starting with the highest-value types.
+1. Add an `audit-markdown-quality` command that pairs each XML file with its generated Markdown.
+2. Classify each document as full-text CLML, metadata-only, PDF-backed, or locally problematic.
+3. For full-text XML, compare extracted XML text length with Markdown length and flag unusually low ratios.
+4. Count expected structural features in XML and compare them with Markdown output:
+   - title and metadata/frontmatter;
+   - Parts, Chapters, sections, schedules, paragraphs, and subparagraphs;
+   - tables, lists, forms, images, notes, commentary, and attachments.
+5. Flag likely quality risks, including empty body output, missing source URI, empty headings, duplicate headings, unresolved placeholders, missing schedules, and table-heavy documents.
+6. Write per-type JSON quality reports and an aggregate human summary.
+7. Add a sampling command that selects representative documents for manual review:
+   - random full-text documents;
+   - oldest and newest documents;
+   - longest and shortest documents;
+   - table-heavy and schedule-heavy documents;
+   - examples from each legislation type.
+8. Record known converter warnings in reports so later publishing and CI can distinguish acceptable limitations from regressions.
 
 ### Next: PDF-Only And Non-CLML Sources
 
@@ -315,6 +305,35 @@ Goal: improve Markdown quality and diff readability.
 4. Add snapshot tests using known legislation samples from multiple types and eras.
 5. Generate provision-level files rather than whole-document blobs for the committed legislation repository.
 6. Make conversion idempotent so unchanged Markdown is not rewritten unnecessarily.
+
+### Next: Publishing Options
+
+Goal: decide how generated Markdown should be distributed once the quality audit is good enough.
+
+Likely publishing surfaces:
+
+1. Static website for human browsing:
+   - fast generated pages over the Markdown corpus;
+   - stable URLs for legislation type, year, number, provision, and snapshot date;
+   - search and browse indexes by type, year, subject, title, and metadata-only/PDF-backed status;
+   - an `llms.txt` view and predictable raw Markdown URLs for agent consumption.
+2. Versioned Git repository:
+   - one committed current-law tree that can be diffed over time;
+   - dated snapshot tags or branches for reproducibility;
+   - generated commits for newly published or republished legislation;
+   - CI checks proving Markdown can be regenerated deterministically from source data.
+3. Installable data package:
+   - package metadata indexes plus generated Markdown paths;
+   - stable APIs for locating documents by type/year/number and source URI;
+   - optional inclusion of source XML, or pointers to an external XML cache;
+   - useful for downstream tools that want local, scriptable access rather than a website.
+
+Open design choices:
+
+- whether one canonical generated tree can support all three surfaces;
+- whether metadata-only stubs should live beside full-text Markdown or in a separate coverage index;
+- whether source XML should be published with Markdown, stored in Git LFS, or kept in an external cache;
+- how to version PDF-extracted text separately from CLML-derived Markdown.
 
 ### Next: Bulk Initial Corpus
 
@@ -354,11 +373,11 @@ Plan:
 4. Treat unavailable point-in-time XML as an expected outcome.
 5. Reuse this path later when the Publication Log says a document was published or republished.
 
-### Later: Initial Markdown Corpus Import
+### Later: Generated Repository Import
 
 - Use the fetched XML corpus as canonical source input.
-- Convert a bounded corpus first, probably `ukpga` plus `uksi`.
-- Commit generated Markdown output.
+- Choose the publication layout: whole-document Markdown first, provision-level files, or both.
+- Commit generated Markdown output into a separate generated legislation repository.
 - Measure repo size, conversion time, and diff readability.
 - Decide whether large source XML files belong in Git, Git LFS, or an external cache.
 
