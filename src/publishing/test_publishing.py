@@ -95,6 +95,7 @@ def test_publish_markdown_to_postgres_scans_only_selected_type_roots(tmp_path: P
         markdown_root=markdown_root,
         database_url="postgres://example",
         output_root=tmp_path,
+        object_store_root=tmp_path / "objects",
         collection="point-in-time",
         snapshot_date="2026-05-05",
         legislation_types=["ukpga"],
@@ -102,6 +103,10 @@ def test_publish_markdown_to_postgres_scans_only_selected_type_roots(tmp_path: P
 
     assert report.scanned == 1
     assert report.published == 1
+    stored_markdown_path = (
+        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    )
+    assert stored_markdown_path.exists()
 
 
 def test_source_xml_path_for_markdown_ref_returns_matching_point_in_time_xml_path(tmp_path: Path) -> None:
@@ -135,6 +140,7 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
         markdown_root=markdown_root,
         database_url="postgres://example",
         output_root=tmp_path,
+        object_store_root=tmp_path / "objects",
         collection="point-in-time",
         snapshot_date="2026-05-05",
     )
@@ -151,6 +157,23 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
     assert version_params[2] == "point_in_time"
     assert version_params[5] == "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml"
     assert version_params[6] == "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+    stored_markdown_path = (
+        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    )
+    stored_xml_path = (
+        tmp_path
+        / "objects"
+        / "legislation"
+        / "xml"
+        / "point-in-time"
+        / "2026-05-05"
+        / "ukpga"
+        / "2026"
+        / "14"
+        / "data.xml"
+    )
+    assert stored_markdown_path.read_text() == MARKDOWN
+    assert stored_xml_path.exists()
 
 
 class RecordingConnection:

@@ -27,6 +27,7 @@ packages = [
     "src/coverage_audit",
     "src/fetchers",
     "src/git_legislation",
+    "src/object_store",
     "src/publishing",
     "src/seeding",
 ]

@@ -1,7 +1,6 @@
 """Publish converted legislation Markdown into queryable databases."""
 
 import hashlib
-import mimetypes
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -10,6 +9,8 @@ from typing import Any
 
 import psycopg
 import yaml
+
+from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore, StoredObject
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
 PUBLISH_LOG_INTERVAL = 500
@@ -120,6 +121,8 @@ def publish_markdown_to_postgres(
     markdown_root: Path,
     database_url: str,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    object_store_root: Path = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: str = "legislation",
     collection: str = "point-in-time",
     snapshot_date: str | None = None,
     legislation_types: Iterable[str] | None = None,
@@ -134,6 +137,7 @@ def publish_markdown_to_postgres(
 
     report = PublishReport(collection=collection, snapshot_date=snapshot_date, database_path="Postgres")
     selected_types = set(legislation_types or [])
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
 
     with psycopg.connect(database_url) as connection:
         for index, markdown_path in enumerate(
@@ -151,7 +155,12 @@ def publish_markdown_to_postgres(
                 if selected_types and ref.legislation_type not in selected_types:
                     continue
                 document = parse_markdown_document(ref)
-                upsert_postgres_markdown_document(connection, document, output_root=output_root)
+                upsert_postgres_markdown_document(
+                    connection,
+                    document,
+                    output_root=output_root,
+                    object_store=object_store,
+                )
             except Exception as error:
                 report.failures.append(f"{markdown_path}: {error}")
             else:
@@ -284,21 +293,27 @@ def upsert_postgres_markdown_document(
     connection: psycopg.Connection[Any],
     document: ParsedMarkdownDocument,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
+    object_store: LocalObjectStore | None = None,
 ) -> None:
     ref = document.ref
+    object_store = object_store or LocalObjectStore()
     calendar_year = int(ref.year) if ref.year and ref.year.isdigit() else None
     document_uri = document.document_uri or f"https://www.legislation.gov.uk/{ref.document_id}"
     version_kind = _postgres_version_kind(ref.collection)
     snapshot_date = ref.snapshot_date if version_kind == "point_in_time" else None
     markdown_object_key = _storage_key(ref.markdown_path, output_root=output_root)
     xml_path = source_xml_path_for_markdown_ref(ref, output_root=output_root)
-    source_object_key = _storage_key(xml_path, output_root=output_root) if xml_path.exists() else None
-    source_sha256 = _file_sha256(xml_path) if xml_path.exists() else document.content_hash
     source_uri = _source_uri(document)
+    markdown_object = object_store.put_file(ref.markdown_path, key=markdown_object_key)
+    source_object = None
+    if xml_path.exists():
+        source_object = object_store.put_file(xml_path, key=_storage_key(xml_path, output_root=output_root))
+    source_object_key = source_object.key if source_object is not None else None
+    source_sha256 = source_object.sha256 if source_object is not None else document.content_hash
 
-    upsert_storage_object(connection, ref.markdown_path, key=markdown_object_key, source_url=None)
-    if xml_path.exists() and source_object_key is not None:
-        upsert_storage_object(connection, xml_path, key=source_object_key, source_url=source_uri)
+    upsert_storage_object(connection, markdown_object, source_url=None)
+    if source_object is not None:
+        upsert_storage_object(connection, source_object, source_url=source_uri)
 
     connection.execute(
         """
@@ -426,10 +441,8 @@ def upsert_postgres_markdown_document(
 
 def upsert_storage_object(
     connection: psycopg.Connection[Any],
-    path: Path,
-    key: str,
+    stored_object: StoredObject,
     source_url: str | None,
-    bucket: str = "legislation",
 ) -> None:
     connection.execute(
         """
@@ -442,11 +455,11 @@ def upsert_storage_object(
             source_url = excluded.source_url
         """,
         (
-            key,
-            bucket,
-            _file_sha256(path),
-            path.stat().st_size,
-            _content_type(path),
+            stored_object.key,
+            stored_object.bucket,
+            stored_object.sha256,
+            stored_object.byte_size,
+            stored_object.content_type,
             source_url,
         ),
     )
@@ -532,14 +545,6 @@ def _storage_key(path: Path, output_root: Path = DEFAULT_OUTPUT_ROOT) -> str:
         return path.resolve().relative_to(output_root.resolve()).as_posix()
     except ValueError:
         return path.name
-
-
-def _file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _content_type(path: Path) -> str:
-    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
 def _provision_type(provision: ProvisionRecord) -> str:

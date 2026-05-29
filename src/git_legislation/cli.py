@@ -38,6 +38,7 @@ from fetchers.legislationdotgovdotuk import (
     write_fetch_report,
     write_source_document_xml,
 )
+from object_store import DEFAULT_OBJECT_STORE_ROOT
 from publishing import (
     enacted_markdown_root,
     point_in_time_markdown_root,
@@ -384,6 +385,17 @@ def publish_markdown_postgres(
         str | None,
         typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
     ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
     output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
     if database_url is None:
@@ -408,6 +420,8 @@ def publish_markdown_postgres(
         markdown_root=markdown_root,
         database_url=database_url,
         output_root=output_root,
+        object_store_root=object_store_root,
+        object_store_bucket=object_store_bucket,
         collection=collection,
         snapshot_date=snapshot_date,
         legislation_types=legislation_types,
