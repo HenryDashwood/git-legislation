@@ -4,6 +4,7 @@ from typing import Any
 import publishing
 from publishing import (
     markdown_ref_from_path,
+    normalize_markdown_text,
     parse_markdown_document,
     publish_markdown_to_postgres,
     source_xml_path_for_markdown_ref,
@@ -39,6 +40,12 @@ def test_split_frontmatter_returns_metadata_and_body() -> None:
     assert metadata["title"] == "Industry and Exports (Financial Assistance) Act 2026"
     assert metadata["pdf_alternatives"] == ["http://www.legislation.gov.uk/ukpga/2026/14/data.pdf"]
     assert body.startswith("\n# Industry and Exports")
+
+
+def test_normalize_markdown_text_replaces_windows_1252_punctuation() -> None:
+    markdown = '---\ntitle: "Disabled Persons\x92 Vehicles \x96 Example"\n---\n'
+
+    assert normalize_markdown_text(markdown) == '---\ntitle: "Disabled Persons\' Vehicles - Example"\n---\n'
 
 
 def test_markdown_ref_from_point_in_time_path(tmp_path: Path) -> None:
@@ -78,6 +85,26 @@ def test_parse_markdown_document_splits_section_provisions(tmp_path: Path) -> No
     assert document.provisions[0].number == "1"
     assert document.provisions[0].anchor == "1-limit-on-selective-financial-assistance-for-industry"
     assert "Industrial Development Act 1982" in document.provisions[0].text
+
+
+def test_parse_markdown_document_normalizes_frontmatter_before_yaml_parsing(tmp_path: Path) -> None:
+    markdown = MARKDOWN.replace(
+        "Industry and Exports (Financial Assistance)",
+        "Disabled Persons\x92 Vehicles",
+    )
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "nisr" / "2011" / "307.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(markdown)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    document = parse_markdown_document(ref)
+
+    assert document.title == "Disabled Persons' Vehicles Act 2026"
 
 
 def test_publish_markdown_to_postgres_scans_only_selected_type_roots(tmp_path: Path, monkeypatch: Any) -> None:

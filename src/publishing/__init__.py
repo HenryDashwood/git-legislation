@@ -13,9 +13,40 @@ import yaml
 from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore, StoredObject
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
-PUBLISH_LOG_INTERVAL = 500
+PUBLISH_LOG_INTERVAL = 1000
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+WINDOWS_1252_CONTROL_CHARS = str.maketrans(
+    {
+        "\x80": "EUR",
+        "\x82": "'",
+        "\x83": "f",
+        "\x84": '"',
+        "\x85": "...",
+        "\x86": "+",
+        "\x87": "++",
+        "\x88": "^",
+        "\x89": " per mille ",
+        "\x8a": "S",
+        "\x8b": "<",
+        "\x8c": "OE",
+        "\x8e": "Z",
+        "\x91": "'",
+        "\x92": "'",
+        "\x93": '"',
+        "\x94": '"',
+        "\x95": "*",
+        "\x96": "-",
+        "\x97": "-",
+        "\x98": "~",
+        "\x99": "TM",
+        "\x9a": "s",
+        "\x9b": ">",
+        "\x9c": "oe",
+        "\x9e": "z",
+        "\x9f": "Y",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -230,7 +261,7 @@ def markdown_ref_from_path(
 
 
 def parse_markdown_document(ref: MarkdownDocumentRef) -> ParsedMarkdownDocument:
-    markdown = ref.markdown_path.read_text()
+    markdown = normalize_markdown_text(ref.markdown_path.read_text())
     metadata, body = split_frontmatter(markdown)
     provisions = tuple(split_provisions(body))
     return ParsedMarkdownDocument(
@@ -252,6 +283,10 @@ def split_frontmatter(markdown: str) -> tuple[dict[str, Any], str]:
         raise ValueError("Markdown frontmatter is not a mapping")
 
     return metadata, markdown[match.end() :]
+
+
+def normalize_markdown_text(markdown: str) -> str:
+    return markdown.translate(WINDOWS_1252_CONTROL_CHARS)
 
 
 def split_provisions(body_markdown: str) -> list[ProvisionRecord]:
