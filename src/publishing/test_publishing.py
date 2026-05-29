@@ -1,11 +1,12 @@
-import sqlite3
 from pathlib import Path
+from typing import Any
 
+import publishing
 from publishing import (
-    default_sqlite_database_path,
     markdown_ref_from_path,
     parse_markdown_document,
-    publish_markdown_to_sqlite,
+    publish_markdown_to_postgres,
+    source_xml_path_for_markdown_ref,
     split_frontmatter,
 )
 
@@ -79,85 +80,7 @@ def test_parse_markdown_document_splits_section_provisions(tmp_path: Path) -> No
     assert "Industrial Development Act 1982" in document.provisions[0].text
 
 
-def test_publish_markdown_to_sqlite_inserts_documents_versions_provisions_and_search(tmp_path: Path) -> None:
-    markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-05"
-    markdown_path = markdown_root / "ukpga" / "2026" / "14.md"
-    markdown_path.parent.mkdir(parents=True)
-    markdown_path.write_text(MARKDOWN)
-    database_path = default_sqlite_database_path(tmp_path)
-
-    report = publish_markdown_to_sqlite(
-        markdown_root=markdown_root,
-        database_path=database_path,
-        output_root=tmp_path,
-        collection="point-in-time",
-        snapshot_date="2026-05-05",
-    )
-
-    assert report.scanned == 1
-    assert report.published == 1
-    assert report.failures == []
-
-    with sqlite3.connect(database_path) as connection:
-        document = connection.execute("select id, title, legislation_type, calendar_year from documents").fetchone()
-        version = connection.execute(
-            "select id, document_id, collection, snapshot_date, word_count from versions"
-        ).fetchone()
-        provisions = connection.execute("select heading from provisions order by ordinal").fetchall()
-        search = connection.execute(
-            """
-            select provision_id
-            from provision_search
-            where provision_search match 'overseas'
-            """
-        ).fetchall()
-
-    assert document == (
-        "ukpga/2026/14",
-        "Industry and Exports (Financial Assistance) Act 2026",
-        "ukpga",
-        2026,
-    )
-    assert version[1:4] == ("ukpga/2026/14", "point-in-time", "2026-05-05")
-    assert version[4] > 0
-    assert provisions == [
-        ("1 Limit on selective financial assistance for industry",),
-        ("2 Financial assistance for exports and overseas investment: commitment limits",),
-    ]
-    assert len(search) == 1
-
-
-def test_publish_markdown_to_sqlite_is_idempotent_for_a_version(tmp_path: Path) -> None:
-    markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-05"
-    markdown_path = markdown_root / "ukpga" / "2026" / "14.md"
-    markdown_path.parent.mkdir(parents=True)
-    markdown_path.write_text(MARKDOWN)
-    database_path = default_sqlite_database_path(tmp_path)
-
-    publish_markdown_to_sqlite(
-        markdown_root=markdown_root,
-        database_path=database_path,
-        output_root=tmp_path,
-        collection="point-in-time",
-        snapshot_date="2026-05-05",
-    )
-    publish_markdown_to_sqlite(
-        markdown_root=markdown_root,
-        database_path=database_path,
-        output_root=tmp_path,
-        collection="point-in-time",
-        snapshot_date="2026-05-05",
-    )
-
-    with sqlite3.connect(database_path) as connection:
-        provision_count = connection.execute("select count(*) from provisions").fetchone()[0]
-        search_count = connection.execute("select count(*) from provision_search").fetchone()[0]
-
-    assert provision_count == 2
-    assert search_count == 2
-
-
-def test_publish_markdown_to_sqlite_scans_only_selected_type_roots(tmp_path: Path) -> None:
+def test_publish_markdown_to_postgres_scans_only_selected_type_roots(tmp_path: Path, monkeypatch: Any) -> None:
     markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-05"
     ukpga_path = markdown_root / "ukpga" / "2026" / "14.md"
     uksi_path = markdown_root / "uksi" / "2026" / "1.md"
@@ -165,10 +88,12 @@ def test_publish_markdown_to_sqlite_scans_only_selected_type_roots(tmp_path: Pat
     uksi_path.parent.mkdir(parents=True)
     ukpga_path.write_text(MARKDOWN)
     uksi_path.write_text(MARKDOWN.replace("ukpga/2026/14", "uksi/2026/1"))
+    connection = RecordingConnection()
+    monkeypatch.setattr(publishing.psycopg, "connect", lambda _: connection)
 
-    report = publish_markdown_to_sqlite(
+    report = publish_markdown_to_postgres(
         markdown_root=markdown_root,
-        database_path=default_sqlite_database_path(tmp_path),
+        database_url="postgres://example",
         output_root=tmp_path,
         collection="point-in-time",
         snapshot_date="2026-05-05",
@@ -177,3 +102,70 @@ def test_publish_markdown_to_sqlite_scans_only_selected_type_roots(tmp_path: Pat
 
     assert report.scanned == 1
     assert report.published == 1
+
+
+def test_source_xml_path_for_markdown_ref_returns_matching_point_in_time_xml_path(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(MARKDOWN)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    assert source_xml_path_for_markdown_ref(ref, output_root=tmp_path) == (
+        tmp_path / "xml" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14" / "data.xml"
+    )
+
+
+def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path, monkeypatch: Any) -> None:
+    markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-05"
+    markdown_path = markdown_root / "ukpga" / "2026" / "14.md"
+    xml_path = tmp_path / "xml" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14" / "data.xml"
+    markdown_path.parent.mkdir(parents=True)
+    xml_path.parent.mkdir(parents=True)
+    markdown_path.write_text(MARKDOWN)
+    xml_path.write_text("<Legislation DocumentURI='http://www.legislation.gov.uk/ukpga/2026/14' />")
+    connection = RecordingConnection()
+    monkeypatch.setattr(publishing.psycopg, "connect", lambda _: connection)
+
+    report = publish_markdown_to_postgres(
+        markdown_root=markdown_root,
+        database_url="postgres://example",
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    assert report.scanned == 1
+    assert report.published == 1
+    assert report.failures == []
+    assert connection.committed
+    assert any("insert into documents" in sql for sql, _ in connection.executed)
+    assert any("insert into document_versions" in sql for sql, _ in connection.executed)
+    assert any("insert into provisions" in sql for sql, _ in connection.executed)
+    version_params = next(params for sql, params in connection.executed if "insert into document_versions" in sql)
+    assert version_params[0] == "point-in-time:2026-05-05:ukpga/2026/14"
+    assert version_params[2] == "point_in_time"
+    assert version_params[5] == "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml"
+    assert version_params[6] == "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+
+
+class RecordingConnection:
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+        self.committed = False
+
+    def __enter__(self) -> "RecordingConnection":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
+        self.executed.append((" ".join(sql.split()), params))
+
+    def commit(self) -> None:
+        self.committed = True

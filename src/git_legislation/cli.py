@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -38,10 +39,9 @@ from fetchers.legislationdotgovdotuk import (
     write_source_document_xml,
 )
 from publishing import (
-    default_sqlite_database_path,
     enacted_markdown_root,
     point_in_time_markdown_root,
-    publish_markdown_to_sqlite,
+    publish_markdown_to_postgres,
     render_publish_report,
 )
 from seeding import BulkArchiveDownloadError, download_bulk_archive, seed_enacted_xml_from_archive
@@ -210,9 +210,7 @@ def point_in_time_failures_command(
     legislation_type: Annotated[str, typer.Option(help="Legislation type to inspect.")] = "ukpga",
     output_root: Annotated[Path, typer.Option(help="Root folder for report input.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
-    typer.echo(
-        render_point_in_time_failure_details(at=at, legislation_type=legislation_type, output_root=output_root)
-    )
+    typer.echo(render_point_in_time_failure_details(at=at, legislation_type=legislation_type, output_root=output_root))
 
 
 @app.command("clean-point-in-time-xml")
@@ -368,8 +366,8 @@ def seed_enacted_xml(
         typer.echo(path)
 
 
-@app.command("publish-markdown-sqlite")
-def publish_markdown_sqlite(
+@app.command("publish-markdown-postgres")
+def publish_markdown_postgres(
     collection: Annotated[
         str,
         typer.Option("--collection", help="Markdown collection to publish: point-in-time or enacted."),
@@ -382,16 +380,17 @@ def publish_markdown_sqlite(
             help="Legislation type to publish. Repeat to publish more than one. Defaults to every converted type.",
         ),
     ] = None,
-    database_path: Annotated[
-        Path | None,
-        typer.Option("--database-path", help="SQLite database path. Defaults to output/publish/legislation.sqlite."),
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
     ] = None,
-    reset: Annotated[
-        bool,
-        typer.Option("--reset", help="Drop and recreate publishing tables before inserting."),
-    ] = False,
     output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
+    if database_url is None:
+        database_url = os.environ.get("DB_URL")
+    if database_url is None:
+        raise click.ClickException("Set DB_URL or pass --database-url.")
+
     if collection == "point-in-time":
         if at is None:
             raise click.ClickException("--at is required when publishing point-in-time Markdown.")
@@ -405,14 +404,13 @@ def publish_markdown_sqlite(
     else:
         raise click.ClickException("--collection must be either point-in-time or enacted.")
 
-    report = publish_markdown_to_sqlite(
+    report = publish_markdown_to_postgres(
         markdown_root=markdown_root,
-        database_path=database_path or default_sqlite_database_path(output_root),
+        database_url=database_url,
         output_root=output_root,
         collection=collection,
         snapshot_date=snapshot_date,
         legislation_types=legislation_types,
-        reset=reset,
         log=typer.echo,
     )
     typer.echo(render_publish_report(report))

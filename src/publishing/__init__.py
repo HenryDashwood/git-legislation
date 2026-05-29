@@ -1,14 +1,14 @@
 """Publish converted legislation Markdown into queryable databases."""
 
 import hashlib
-import json
+import mimetypes
 import re
-import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import yaml
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
@@ -116,14 +116,13 @@ class PublishReport:
     database_path: str | None = None
 
 
-def publish_markdown_to_sqlite(
+def publish_markdown_to_postgres(
     markdown_root: Path,
-    database_path: Path,
+    database_url: str,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     collection: str = "point-in-time",
     snapshot_date: str | None = None,
     legislation_types: Iterable[str] | None = None,
-    reset: bool = False,
     log: Callable[[str], None] | None = None,
 ) -> PublishReport:
     if collection not in {"enacted", "point-in-time"}:
@@ -133,16 +132,10 @@ def publish_markdown_to_sqlite(
     if collection == "enacted" and snapshot_date is not None:
         raise ValueError("Enacted Markdown publishing cannot use a snapshot date.")
 
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    report = PublishReport(collection=collection, snapshot_date=snapshot_date, database_path=str(database_path))
+    report = PublishReport(collection=collection, snapshot_date=snapshot_date, database_path="Postgres")
     selected_types = set(legislation_types or [])
 
-    with sqlite3.connect(database_path) as connection:
-        connection.row_factory = sqlite3.Row
-        if reset:
-            drop_sqlite_schema(connection)
-        create_sqlite_schema(connection)
-
+    with psycopg.connect(database_url) as connection:
         for index, markdown_path in enumerate(
             iter_markdown_paths(markdown_root=markdown_root, legislation_types=selected_types),
             start=1,
@@ -158,7 +151,7 @@ def publish_markdown_to_sqlite(
                 if selected_types and ref.legislation_type not in selected_types:
                     continue
                 document = parse_markdown_document(ref)
-                upsert_markdown_document(connection, document)
+                upsert_postgres_markdown_document(connection, document, output_root=output_root)
             except Exception as error:
                 report.failures.append(f"{markdown_path}: {error}")
             else:
@@ -193,10 +186,6 @@ def iter_markdown_paths(markdown_root: Path, legislation_types: set[str] | None 
         return sorted(paths)
 
     return sorted(markdown_root.rglob("*.md"))
-
-
-def default_sqlite_database_path(output_root: Path) -> Path:
-    return output_root / "publish" / "legislation.sqlite"
 
 
 def markdown_ref_from_path(
@@ -291,16 +280,32 @@ def split_provisions(body_markdown: str) -> list[ProvisionRecord]:
     return provisions
 
 
-def upsert_markdown_document(connection: sqlite3.Connection, document: ParsedMarkdownDocument) -> None:
+def upsert_postgres_markdown_document(
+    connection: psycopg.Connection[Any],
+    document: ParsedMarkdownDocument,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> None:
     ref = document.ref
-    source_path_json = json.dumps(list(ref.source_path))
     calendar_year = int(ref.year) if ref.year and ref.year.isdigit() else None
+    document_uri = document.document_uri or f"https://www.legislation.gov.uk/{ref.document_id}"
+    version_kind = _postgres_version_kind(ref.collection)
+    snapshot_date = ref.snapshot_date if version_kind == "point_in_time" else None
+    markdown_object_key = _storage_key(ref.markdown_path, output_root=output_root)
+    xml_path = source_xml_path_for_markdown_ref(ref, output_root=output_root)
+    source_object_key = _storage_key(xml_path, output_root=output_root) if xml_path.exists() else None
+    source_sha256 = _file_sha256(xml_path) if xml_path.exists() else document.content_hash
+    source_uri = _source_uri(document)
+
+    upsert_storage_object(connection, ref.markdown_path, key=markdown_object_key, source_url=None)
+    if xml_path.exists() and source_object_key is not None:
+        upsert_storage_object(connection, xml_path, key=source_object_key, source_url=source_uri)
 
     connection.execute(
         """
         insert into documents (
-            id, legislation_type, year, calendar_year, number, title, document_uri, status, extent, source_path_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, legislation_type, year, calendar_year, number, title, document_uri,
+            status, extent, source_path, updated_at
+        ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
         on conflict(id) do update set
             legislation_type = excluded.legislation_type,
             year = excluded.year,
@@ -310,7 +315,8 @@ def upsert_markdown_document(connection: sqlite3.Connection, document: ParsedMar
             document_uri = excluded.document_uri,
             status = excluded.status,
             extent = excluded.extent,
-            source_path_json = excluded.source_path_json
+            source_path = excluded.source_path,
+            updated_at = now()
         """,
         (
             ref.document_id,
@@ -319,142 +325,150 @@ def upsert_markdown_document(connection: sqlite3.Connection, document: ParsedMar
             calendar_year,
             ref.number,
             document.title,
-            document.document_uri,
+            document_uri,
             document.status,
             document.extent,
-            source_path_json,
+            list(ref.source_path),
         ),
     )
-    connection.execute("delete from provisions where version_id = ?", (ref.version_id,))
-    connection.execute("delete from provision_search where version_id = ?", (ref.version_id,))
     connection.execute(
         """
-        insert into versions (
-            id, document_id, collection, snapshot_date, markdown_path, content_hash, word_count,
-            is_metadata_only, pdf_alternatives_json, body_markdown
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        insert into document_versions (
+            id, document_id, version_kind, snapshot_date, source_uri, source_object_key,
+            markdown_object_key, source_sha256, markdown_sha256, word_count, is_metadata_only
+        ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         on conflict(id) do update set
-            markdown_path = excluded.markdown_path,
-            content_hash = excluded.content_hash,
+            source_uri = excluded.source_uri,
+            source_object_key = excluded.source_object_key,
+            markdown_object_key = excluded.markdown_object_key,
+            source_sha256 = excluded.source_sha256,
+            markdown_sha256 = excluded.markdown_sha256,
             word_count = excluded.word_count,
-            is_metadata_only = excluded.is_metadata_only,
-            pdf_alternatives_json = excluded.pdf_alternatives_json,
-            body_markdown = excluded.body_markdown
+            is_metadata_only = excluded.is_metadata_only
         """,
         (
             ref.version_id,
             ref.document_id,
-            ref.collection,
-            ref.snapshot_date,
-            str(ref.markdown_path),
+            version_kind,
+            snapshot_date,
+            source_uri,
+            source_object_key,
+            markdown_object_key,
+            source_sha256,
             document.content_hash,
             document.word_count,
-            int(document.is_metadata_only),
-            json.dumps(list(document.pdf_alternatives)),
-            document.body_markdown,
+            document.is_metadata_only,
         ),
     )
+    connection.execute(
+        "update documents set latest_version_id = %s, updated_at = now() where id = %s",
+        (ref.version_id, ref.document_id),
+    )
+    connection.execute("delete from provisions where version_id = %s", (ref.version_id,))
+    connection.execute("delete from document_files where version_id = %s", (ref.version_id,))
+
+    insert_document_file(
+        connection,
+        document_id=ref.document_id,
+        version_id=ref.version_id,
+        file_kind="markdown",
+        object_key=markdown_object_key,
+        sha256=document.content_hash,
+        source_url=None,
+        is_canonical=True,
+    )
+    if source_object_key is not None:
+        insert_document_file(
+            connection,
+            document_id=ref.document_id,
+            version_id=ref.version_id,
+            file_kind="clml_xml",
+            object_key=source_object_key,
+            sha256=source_sha256,
+            source_url=source_uri,
+            is_canonical=True,
+        )
+    for pdf_url in document.pdf_alternatives:
+        insert_document_file(
+            connection,
+            document_id=ref.document_id,
+            version_id=ref.version_id,
+            file_kind="pdf",
+            object_key=None,
+            sha256=None,
+            source_url=pdf_url,
+            is_canonical=False,
+        )
 
     for provision in document.provisions:
         provision_id = f"{ref.version_id}:provision:{provision.ordinal}"
         connection.execute(
             """
             insert into provisions (
-                id, version_id, document_id, ordinal, heading, number, anchor, markdown, text
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, version_id, document_id, ordinal, provision_type, number,
+                heading, anchor, markdown, plain_text
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 provision_id,
                 ref.version_id,
                 ref.document_id,
                 provision.ordinal,
-                provision.heading,
+                _provision_type(provision),
                 provision.number,
+                provision.heading,
                 provision.anchor,
                 provision.markdown,
                 provision.text,
             ),
         )
-        connection.execute(
-            """
-            insert into provision_search (
-                provision_id, version_id, document_id, title, heading, text
-            ) values (?, ?, ?, ?, ?, ?)
-            """,
-            (provision_id, ref.version_id, ref.document_id, document.title, provision.heading, provision.text),
-        )
 
 
-def create_sqlite_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        pragma foreign_keys = on;
-
-        create table if not exists documents (
-            id text primary key,
-            legislation_type text not null,
-            year text,
-            calendar_year integer,
-            number text not null,
-            title text not null,
-            document_uri text,
-            status text,
-            extent text,
-            source_path_json text not null
-        );
-
-        create table if not exists versions (
-            id text primary key,
-            document_id text not null references documents(id) on delete cascade,
-            collection text not null,
-            snapshot_date text,
-            markdown_path text not null,
-            content_hash text not null,
-            word_count integer not null,
-            is_metadata_only integer not null default 0,
-            pdf_alternatives_json text not null default '[]',
-            body_markdown text not null
-        );
-
-        create table if not exists provisions (
-            id text primary key,
-            version_id text not null references versions(id) on delete cascade,
-            document_id text not null references documents(id) on delete cascade,
-            ordinal integer not null,
-            heading text not null,
-            number text,
-            anchor text not null,
-            markdown text not null,
-            text text not null
-        );
-
-        create index if not exists documents_type_year_idx on documents(legislation_type, calendar_year, number);
-        create index if not exists versions_document_idx on versions(document_id, collection, snapshot_date);
-        create index if not exists provisions_version_idx on provisions(version_id, ordinal);
-        """
-    )
+def upsert_storage_object(
+    connection: psycopg.Connection[Any],
+    path: Path,
+    key: str,
+    source_url: str | None,
+    bucket: str = "legislation",
+) -> None:
     connection.execute(
         """
-        create virtual table if not exists provision_search using fts5(
-            provision_id unindexed,
-            version_id unindexed,
-            document_id unindexed,
-            title,
-            heading,
-            text
-        )
-        """
+        insert into storage_objects (key, bucket, sha256, byte_size, content_type, source_url)
+        values (%s, %s, %s, %s, %s, %s)
+        on conflict(key) do update set
+            sha256 = excluded.sha256,
+            byte_size = excluded.byte_size,
+            content_type = excluded.content_type,
+            source_url = excluded.source_url
+        """,
+        (
+            key,
+            bucket,
+            _file_sha256(path),
+            path.stat().st_size,
+            _content_type(path),
+            source_url,
+        ),
     )
 
 
-def drop_sqlite_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
+def insert_document_file(
+    connection: psycopg.Connection[Any],
+    document_id: str,
+    version_id: str,
+    file_kind: str,
+    object_key: str | None,
+    sha256: str | None,
+    source_url: str | None,
+    is_canonical: bool,
+) -> None:
+    connection.execute(
         """
-        drop table if exists provision_search;
-        drop table if exists provisions;
-        drop table if exists versions;
-        drop table if exists documents;
-        """
+        insert into document_files (
+            document_id, version_id, file_kind, source_url, object_key, sha256, is_canonical
+        ) values (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (document_id, version_id, file_kind, source_url, object_key, sha256, is_canonical),
     )
 
 
@@ -486,6 +500,55 @@ def render_publish_report(report: PublishReport) -> str:
         if len(report.failures) > 20:
             lines.append(f"- ... {len(report.failures) - 20} more")
     return "\n".join(lines)
+
+
+def source_xml_path_for_markdown_ref(ref: MarkdownDocumentRef, output_root: Path = DEFAULT_OUTPUT_ROOT) -> Path:
+    if ref.collection == "enacted":
+        return output_root / "xml" / "enacted" / Path(*ref.source_path) / "data.xml"
+    if ref.snapshot_date is None:
+        raise ValueError("Point-in-time Markdown requires a snapshot date.")
+    return output_root / "xml" / "point-in-time" / ref.snapshot_date / Path(*ref.source_path) / "data.xml"
+
+
+def _postgres_version_kind(collection: str) -> str:
+    if collection == "enacted":
+        return "enacted"
+    if collection == "point-in-time":
+        return "point_in_time"
+    raise ValueError(f"Unknown Markdown collection: {collection}")
+
+
+def _source_uri(document: ParsedMarkdownDocument) -> str | None:
+    value = document.metadata.get("source_uri")
+    if value:
+        return str(value)
+    if document.document_uri:
+        return f"{document.document_uri.rstrip('/')}/data.xml"
+    return None
+
+
+def _storage_key(path: Path, output_root: Path = DEFAULT_OUTPUT_ROOT) -> str:
+    try:
+        return path.resolve().relative_to(output_root.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _content_type(path: Path) -> str:
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def _provision_type(provision: ProvisionRecord) -> str:
+    heading = provision.heading.lower()
+    if heading.startswith("schedule"):
+        return "schedule"
+    if provision.number is not None:
+        return "section"
+    return "document"
 
 
 def _heading_number(heading: str) -> str | None:

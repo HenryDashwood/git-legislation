@@ -438,22 +438,8 @@ def test_fetch_year_command_fetches_and_writes_each_document(monkeypatch, tmp_pa
     ) -> list[Path]:
         calls["fetch_year_documents_args"] = (legislation_type, year, as_enacted, at, output_root)
         return [
-            output_root
-            / "xml"
-            / "point-in-time"
-            / "2026-05-03"
-            / legislation_type
-            / str(year)
-            / "14"
-            / "data.xml",
-            output_root
-            / "xml"
-            / "point-in-time"
-            / "2026-05-03"
-            / legislation_type
-            / str(year)
-            / "13"
-            / "data.xml",
+            output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "14" / "data.xml",
+            output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "13" / "data.xml",
         ]
 
     monkeypatch.setattr("git_legislation.cli.fetch_year_documents", fake_fetch_year_documents)
@@ -520,22 +506,8 @@ def test_fetch_point_in_time_corpus_command_fetches_configured_corpus(monkeypatc
     ) -> list[Path]:
         calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
         return [
-            output_root
-            / "xml"
-            / "point-in-time"
-            / at
-            / "ukpga"
-            / "2025"
-            / "1"
-            / "data.xml",
-            output_root
-            / "xml"
-            / "point-in-time"
-            / at
-            / "ukpga"
-            / "2026"
-            / "1"
-            / "data.xml",
+            output_root / "xml" / "point-in-time" / at / "ukpga" / "2025" / "1" / "data.xml",
+            output_root / "xml" / "point-in-time" / at / "ukpga" / "2026" / "1" / "data.xml",
         ]
 
     def fake_write_fetch_report(report: object, output_root: Path) -> Path:
@@ -764,28 +736,26 @@ def test_seed_enacted_xml_command_seeds_xml_from_archive(monkeypatch, tmp_path: 
     assert "xml/enacted/ukpga/2026/13/data.xml" in result.output
 
 
-def test_publish_markdown_sqlite_command_publishes_point_in_time_markdown(monkeypatch, tmp_path: Path) -> None:
+def test_publish_markdown_postgres_command_publishes_point_in_time_markdown(monkeypatch, tmp_path: Path) -> None:
     calls: dict[str, object] = {}
-    report = SimpleNamespace(database_path=str(tmp_path / "publish" / "legislation.sqlite"))
+    report = SimpleNamespace(database_path="Postgres")
 
-    def fake_publish_markdown_to_sqlite(
+    def fake_publish_markdown_to_postgres(
         markdown_root: Path,
-        database_path: Path,
+        database_url: str,
         output_root: Path,
         collection: str,
         snapshot_date: str | None,
         legislation_types: list[str] | None,
-        reset: bool,
         log: object,
     ) -> object:
         calls["publish_args"] = (
             markdown_root,
-            database_path,
+            database_url,
             output_root,
             collection,
             snapshot_date,
             legislation_types,
-            reset,
             log,
         )
         return report
@@ -794,18 +764,19 @@ def test_publish_markdown_sqlite_command_publishes_point_in_time_markdown(monkey
         calls["render_args"] = rendered_report
         return "Published 2 Markdown documents"
 
-    monkeypatch.setattr("git_legislation.cli.publish_markdown_to_sqlite", fake_publish_markdown_to_sqlite)
+    monkeypatch.setattr("git_legislation.cli.publish_markdown_to_postgres", fake_publish_markdown_to_postgres)
     monkeypatch.setattr("git_legislation.cli.render_publish_report", fake_render_publish_report)
 
     result = CliRunner().invoke(
         app,
         [
-            "publish-markdown-sqlite",
+            "publish-markdown-postgres",
             "--at",
             "2026-05-03",
             "--legislation-type",
             "ukpga",
-            "--reset",
+            "--database-url",
+            "postgres://example",
             "--output-root",
             str(tmp_path),
         ],
@@ -814,20 +785,28 @@ def test_publish_markdown_sqlite_command_publishes_point_in_time_markdown(monkey
     assert result.exit_code == 0
     assert calls["publish_args"] == (
         tmp_path / "markdown" / "point-in-time" / "2026-05-03",
-        tmp_path / "publish" / "legislation.sqlite",
+        "postgres://example",
         tmp_path,
         "point-in-time",
         "2026-05-03",
         ["ukpga"],
-        True,
         typer.echo,
     )
     assert calls["render_args"] is report
     assert "Published 2 Markdown documents" in result.output
 
 
-def test_publish_markdown_sqlite_command_requires_snapshot_date_for_point_in_time(tmp_path: Path) -> None:
-    result = CliRunner().invoke(app, ["publish-markdown-sqlite", "--output-root", str(tmp_path)])
+def test_publish_markdown_postgres_command_requires_snapshot_date_for_point_in_time(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "publish-markdown-postgres",
+            "--database-url",
+            "postgres://example",
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
 
     assert result.exit_code == 1
     assert "--at is required" in result.output
