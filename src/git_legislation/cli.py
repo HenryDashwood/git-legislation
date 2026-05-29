@@ -37,6 +37,13 @@ from fetchers.legislationdotgovdotuk import (
     write_fetch_report,
     write_source_document_xml,
 )
+from publishing import (
+    default_sqlite_database_path,
+    enacted_markdown_root,
+    point_in_time_markdown_root,
+    publish_markdown_to_sqlite,
+    render_publish_report,
+)
 from seeding import BulkArchiveDownloadError, download_bulk_archive, seed_enacted_xml_from_archive
 
 app = typer.Typer(no_args_is_help=True)
@@ -359,3 +366,53 @@ def seed_enacted_xml(
 
     for path in paths:
         typer.echo(path)
+
+
+@app.command("publish-markdown-sqlite")
+def publish_markdown_sqlite(
+    collection: Annotated[
+        str,
+        typer.Option("--collection", help="Markdown collection to publish: point-in-time or enacted."),
+    ] = "point-in-time",
+    at: Annotated[str | None, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")] = None,
+    legislation_types: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--legislation-type",
+            help="Legislation type to publish. Repeat to publish more than one. Defaults to every converted type.",
+        ),
+    ] = None,
+    database_path: Annotated[
+        Path | None,
+        typer.Option("--database-path", help="SQLite database path. Defaults to output/publish/legislation.sqlite."),
+    ] = None,
+    reset: Annotated[
+        bool,
+        typer.Option("--reset", help="Drop and recreate publishing tables before inserting."),
+    ] = False,
+    output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
+) -> None:
+    if collection == "point-in-time":
+        if at is None:
+            raise click.ClickException("--at is required when publishing point-in-time Markdown.")
+        markdown_root = point_in_time_markdown_root(output_root=output_root, at=at)
+        snapshot_date = at
+    elif collection == "enacted":
+        if at is not None:
+            raise click.ClickException("--at cannot be used when publishing enacted Markdown.")
+        markdown_root = enacted_markdown_root(output_root=output_root)
+        snapshot_date = None
+    else:
+        raise click.ClickException("--collection must be either point-in-time or enacted.")
+
+    report = publish_markdown_to_sqlite(
+        markdown_root=markdown_root,
+        database_path=database_path or default_sqlite_database_path(output_root),
+        output_root=output_root,
+        collection=collection,
+        snapshot_date=snapshot_date,
+        legislation_types=legislation_types,
+        reset=reset,
+        log=typer.echo,
+    )
+    typer.echo(render_publish_report(report))

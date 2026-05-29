@@ -762,3 +762,72 @@ def test_seed_enacted_xml_command_seeds_xml_from_archive(monkeypatch, tmp_path: 
     assert calls["seed_enacted_xml_from_archive_args"] == (archive_path, tmp_path / "output")
     assert "xml/enacted/ukpga/2026/14/data.xml" in result.output
     assert "xml/enacted/ukpga/2026/13/data.xml" in result.output
+
+
+def test_publish_markdown_sqlite_command_publishes_point_in_time_markdown(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, object] = {}
+    report = SimpleNamespace(database_path=str(tmp_path / "publish" / "legislation.sqlite"))
+
+    def fake_publish_markdown_to_sqlite(
+        markdown_root: Path,
+        database_path: Path,
+        output_root: Path,
+        collection: str,
+        snapshot_date: str | None,
+        legislation_types: list[str] | None,
+        reset: bool,
+        log: object,
+    ) -> object:
+        calls["publish_args"] = (
+            markdown_root,
+            database_path,
+            output_root,
+            collection,
+            snapshot_date,
+            legislation_types,
+            reset,
+            log,
+        )
+        return report
+
+    def fake_render_publish_report(rendered_report: object) -> str:
+        calls["render_args"] = rendered_report
+        return "Published 2 Markdown documents"
+
+    monkeypatch.setattr("git_legislation.cli.publish_markdown_to_sqlite", fake_publish_markdown_to_sqlite)
+    monkeypatch.setattr("git_legislation.cli.render_publish_report", fake_render_publish_report)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "publish-markdown-sqlite",
+            "--at",
+            "2026-05-03",
+            "--legislation-type",
+            "ukpga",
+            "--reset",
+            "--output-root",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["publish_args"] == (
+        tmp_path / "markdown" / "point-in-time" / "2026-05-03",
+        tmp_path / "publish" / "legislation.sqlite",
+        tmp_path,
+        "point-in-time",
+        "2026-05-03",
+        ["ukpga"],
+        True,
+        typer.echo,
+    )
+    assert calls["render_args"] is report
+    assert "Published 2 Markdown documents" in result.output
+
+
+def test_publish_markdown_sqlite_command_requires_snapshot_date_for_point_in_time(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, ["publish-markdown-sqlite", "--output-root", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "--at is required" in result.output

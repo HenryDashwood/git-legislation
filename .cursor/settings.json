@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "planetscale": {
+      "enabled": true
+    },
+    "cloudflare": {
+      "enabled": true
+    }
+  }
+}
