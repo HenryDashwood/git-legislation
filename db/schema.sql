@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict gitlegislationschema
+\restrict britishlegislationschema
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
 -- Dumped by pg_dump version 18.3
@@ -153,7 +153,7 @@ CREATE TABLE public.fetch_runs (
     started_at timestamp with time zone DEFAULT now() NOT NULL,
     finished_at timestamp with time zone,
     notes text,
-    CONSTRAINT fetch_runs_mode_check CHECK ((mode = ANY (ARRAY['enacted'::text, 'point_in_time'::text, 'current'::text, 'publication_log'::text, 'other'::text])))
+    CONSTRAINT fetch_runs_mode_check CHECK ((mode = ANY (ARRAY['enacted'::text, 'point_in_time'::text, 'current'::text, 'publication_log'::text, 'publish'::text, 'other'::text])))
 );
 
 
@@ -347,6 +347,13 @@ CREATE INDEX document_files_version_idx ON public.document_files USING btree (ve
 
 
 --
+-- Name: document_versions_content_unique_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX document_versions_content_unique_idx ON public.document_versions USING btree (document_id, version_kind, source_sha256, markdown_sha256) WHERE (markdown_sha256 IS NOT NULL);
+
+
+--
 -- Name: document_versions_document_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -354,10 +361,10 @@ CREATE INDEX document_versions_document_idx ON public.document_versions USING bt
 
 
 --
--- Name: document_versions_point_in_time_unique_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: document_versions_point_in_time_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX document_versions_point_in_time_unique_idx ON public.document_versions USING btree (document_id, version_kind, snapshot_date) WHERE (snapshot_date IS NOT NULL);
+CREATE INDEX document_versions_point_in_time_idx ON public.document_versions USING btree (document_id, version_kind, snapshot_date) WHERE (snapshot_date IS NOT NULL);
 
 
 --
@@ -393,6 +400,13 @@ CREATE INDEX fetch_observations_document_idx ON public.fetch_observations USING 
 --
 
 CREATE INDEX fetch_observations_run_idx ON public.fetch_observations USING btree (fetch_run_id, observed_at);
+
+
+--
+-- Name: fetch_observations_version_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX fetch_observations_version_idx ON public.fetch_observations USING btree (version_id, observed_at);
 
 
 --
@@ -509,5 +523,5 @@ ALTER TABLE ONLY public.provisions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict gitlegislationschema
+\unrestrict britishlegislationschema
 

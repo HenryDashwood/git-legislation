@@ -11,6 +11,7 @@ from converters.clmltomarkdown import (
     document_title,
     markdown_output_target_from_xml_path,
     render_document_markdown,
+    render_document_markdown_from_xml,
     write_conversion_report,
     write_document_markdown,
 )
@@ -62,9 +63,7 @@ def test_document_metadata_reads_pdf_alternatives(tmp_path: Path) -> None:
 
     metadata = document_metadata(xml_path)
 
-    assert metadata.pdf_alternatives == (
-        "http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf",
-    )
+    assert metadata.pdf_alternatives == ("http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf",)
 
 
 def test_document_prelims_reads_title_number_and_long_title() -> None:
@@ -120,9 +119,7 @@ def test_document_sections_reads_commentary_refs() -> None:
 
 
 def test_document_commentaries_reads_commentary_text() -> None:
-    assert document_commentaries(SAMPLE_XML) == {
-        "key-section-1": "S. 1 in force at 18.5.2026, see s. 3(2)"
-    }
+    assert document_commentaries(SAMPLE_XML) == {"key-section-1": "S. 1 in force at 18.5.2026, see s. 3(2)"}
 
 
 def test_document_sections_reads_first_section_body_lines() -> None:
@@ -174,6 +171,13 @@ def test_render_document_markdown_renders_metadata_only_xml(tmp_path: Path) -> N
         "Source XML contains metadata only; full text may be available in PDF or another source format."
     )
     assert "- http://www.legislation.gov.uk/ukpga/1963/1/pdfs/ukpga_19630001_en.pdf" in markdown
+
+
+def test_render_document_markdown_from_xml_renders_without_filesystem_staging() -> None:
+    markdown = render_document_markdown_from_xml(METADATA_ONLY_XML.encode())
+
+    assert "# Consolidated Fund Act 1963" in markdown
+    assert "Source XML contains metadata only" in markdown
 
 
 def test_markdown_output_target_from_xml_path_reads_enacted_source_path(tmp_path: Path) -> None:

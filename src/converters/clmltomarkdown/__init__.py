@@ -78,13 +78,17 @@ def document_title(xml_path: Path) -> str:
 
 def document_metadata(xml_path: Path) -> DocumentMetadata:
     root = ElementTree.parse(xml_path).getroot()
+    return document_metadata_from_root(root, source=str(xml_path))
+
+
+def document_metadata_from_root(root: ElementTree.Element, source: str = "XML document") -> DocumentMetadata:
     title = root.findtext(".//dc:title", namespaces=NAMESPACES)
     if title is None:
-        raise ValueError(f"No document title found in {xml_path}")
+        raise ValueError(f"No document title found in {source}")
 
     document_uri = root.attrib.get("DocumentURI")
     if document_uri is None:
-        raise ValueError(f"No DocumentURI found in {xml_path}")
+        raise ValueError(f"No DocumentURI found in {source}")
 
     return DocumentMetadata(
         title=title,
@@ -97,6 +101,10 @@ def document_metadata(xml_path: Path) -> DocumentMetadata:
 
 def document_prelims(xml_path: Path) -> DocumentPrelims:
     root = ElementTree.parse(xml_path).getroot()
+    return document_prelims_from_root(root, source=str(xml_path))
+
+
+def document_prelims_from_root(root: ElementTree.Element, source: str = "XML document") -> DocumentPrelims:
     title = root.findtext(".//leg:PrimaryPrelims/leg:Title", namespaces=NAMESPACES) or root.findtext(
         ".//dc:title", namespaces=NAMESPACES
     )
@@ -104,7 +112,7 @@ def document_prelims(xml_path: Path) -> DocumentPrelims:
     long_title_element = root.find(".//leg:PrimaryPrelims/leg:LongTitle", namespaces=NAMESPACES)
 
     if title is None:
-        raise ValueError(f"No document title found in {xml_path}")
+        raise ValueError(f"No document title found in {source}")
 
     return DocumentPrelims(
         title=title,
@@ -115,6 +123,10 @@ def document_prelims(xml_path: Path) -> DocumentPrelims:
 
 def document_sections(xml_path: Path) -> list[DocumentSection]:
     root = ElementTree.parse(xml_path).getroot()
+    return document_sections_from_root(root)
+
+
+def document_sections_from_root(root: ElementTree.Element) -> list[DocumentSection]:
     sections: list[DocumentSection] = []
 
     for group in root.findall(".//leg:Body/leg:P1group", namespaces=NAMESPACES):
@@ -135,6 +147,10 @@ def document_sections(xml_path: Path) -> list[DocumentSection]:
 
 def document_commentaries(xml_path: Path) -> dict[str, str]:
     root = ElementTree.parse(xml_path).getroot()
+    return document_commentaries_from_root(root)
+
+
+def document_commentaries_from_root(root: ElementTree.Element) -> dict[str, str]:
     commentaries: dict[str, str] = {}
 
     for commentary in root.findall(".//leg:Commentaries/leg:Commentary", namespaces=NAMESPACES):
@@ -154,7 +170,24 @@ def render_document_markdown(xml_path: Path) -> str:
     prelims = document_prelims(xml_path)
     sections = document_sections(xml_path)
     commentaries = document_commentaries(xml_path)
+    return render_document_markdown_from_parts(metadata, prelims, sections, commentaries)
 
+
+def render_document_markdown_from_xml(content: bytes | str) -> str:
+    root = ElementTree.fromstring(content)
+    metadata = document_metadata_from_root(root)
+    prelims = document_prelims_from_root(root)
+    sections = document_sections_from_root(root)
+    commentaries = document_commentaries_from_root(root)
+    return render_document_markdown_from_parts(metadata, prelims, sections, commentaries)
+
+
+def render_document_markdown_from_parts(
+    metadata: DocumentMetadata,
+    prelims: DocumentPrelims,
+    sections: list[DocumentSection],
+    commentaries: dict[str, str],
+) -> str:
     blocks = [_frontmatter(metadata), f"# {prelims.title}"]
     blocks.extend(block for block in [prelims.number, prelims.long_title] if block)
 
@@ -165,9 +198,7 @@ def render_document_markdown(xml_path: Path) -> str:
 
     for section in sections:
         blocks.append(_section_heading(section))
-        blocks.extend(
-            f"> Commentary: {commentaries[ref]}" for ref in section.commentary_refs if ref in commentaries
-        )
+        blocks.extend(f"> Commentary: {commentaries[ref]}" for ref in section.commentary_refs if ref in commentaries)
         blocks.extend(section.lines)
 
     return "\n\n".join(blocks) + "\n"
@@ -259,8 +290,7 @@ def convert_xml_tree(
             failure_count = len(report.failures) if report is not None else 0
             _log(
                 log,
-                f"Processed {index} XML documents under {xml_root}: "
-                f"{len(paths)} converted, {failure_count} failures",
+                f"Processed {index} XML documents under {xml_root}: {len(paths)} converted, {failure_count} failures",
             )
 
     return paths

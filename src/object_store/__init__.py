@@ -39,6 +39,22 @@ class LocalObjectStore:
             content_type=content_type or guess_content_type(destination),
         )
 
+    def put_bytes(self, content: bytes, key: str, content_type: str | None = None) -> StoredObject:
+        destination = self.path_for_key(key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+        return StoredObject(
+            bucket=self.bucket,
+            key=key,
+            path=destination,
+            sha256=file_sha256(destination),
+            byte_size=destination.stat().st_size,
+            content_type=content_type or guess_content_type(destination),
+        )
+
+    def put_text(self, content: str, key: str, content_type: str | None = None) -> StoredObject:
+        return self.put_bytes(content.encode(), key=key, content_type=content_type)
+
     def path_for_key(self, key: str) -> Path:
         if key.startswith("/") or ".." in Path(key).parts:
             raise ValueError(f"Unsafe object key: {key}")

@@ -144,8 +144,19 @@ class PublishReport:
     snapshot_date: str | None = None
     scanned: int = 0
     published: int = 0
+    created_versions: int = 0
+    reused_versions: int = 0
     failures: list[str] = field(default_factory=list)
     database_path: str | None = None
+
+
+@dataclass(frozen=True)
+class PublishedVersion:
+    document_id: str
+    version_id: str
+    source_uri: str | None
+    source_sha256: str
+    created: bool
 
 
 def publish_markdown_to_postgres(
@@ -171,6 +182,12 @@ def publish_markdown_to_postgres(
     object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
 
     with psycopg.connect(database_url) as connection:
+        publish_run_id = create_publish_run(
+            connection,
+            collection=collection,
+            snapshot_date=snapshot_date,
+            legislation_types=selected_types,
+        )
         for index, markdown_path in enumerate(
             iter_markdown_paths(markdown_root=markdown_root, legislation_types=selected_types),
             start=1,
@@ -186,26 +203,97 @@ def publish_markdown_to_postgres(
                 if selected_types and ref.legislation_type not in selected_types:
                     continue
                 document = parse_markdown_document(ref)
-                upsert_postgres_markdown_document(
+                published_version = upsert_postgres_markdown_document(
                     connection,
                     document,
                     output_root=output_root,
                     object_store=object_store,
                 )
+                record_publish_observation(connection, publish_run_id, published_version)
             except Exception as error:
                 report.failures.append(f"{markdown_path}: {error}")
             else:
                 report.published += 1
+                if published_version.created:
+                    report.created_versions += 1
+                else:
+                    report.reused_versions += 1
 
             if index % PUBLISH_LOG_INTERVAL == 0:
                 _log(
                     log,
-                    f"Scanned {index} Markdown files: {report.published} published, {len(report.failures)} failures",
+                    f"Scanned {index} Markdown files: {report.published} published, "
+                    f"{report.created_versions} versions created, {report.reused_versions} reused, "
+                    f"{len(report.failures)} failures",
                 )
 
+        finish_publish_run(connection, publish_run_id)
         connection.commit()
 
     return report
+
+
+def publish_document_text_to_postgres(
+    database_url: str,
+    source_path: tuple[str, ...],
+    xml_content: bytes,
+    markdown: str,
+    collection: str,
+    snapshot_date: str | None,
+    object_store_root: Path = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: str = "legislation",
+) -> PublishedVersion:
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    with psycopg.connect(database_url) as connection:
+        publish_run_id = create_publish_run(
+            connection,
+            collection=collection,
+            snapshot_date=snapshot_date,
+            legislation_types={source_path[0]} if source_path else set(),
+        )
+        published_version = publish_document_text(
+            connection,
+            source_path=source_path,
+            xml_content=xml_content,
+            markdown=markdown,
+            collection=collection,
+            snapshot_date=snapshot_date,
+            object_store=object_store,
+        )
+        record_publish_observation(connection, publish_run_id, published_version)
+        finish_publish_run(connection, publish_run_id)
+        connection.commit()
+
+    return published_version
+
+
+def publish_document_text(
+    connection: psycopg.Connection[Any],
+    source_path: tuple[str, ...],
+    xml_content: bytes,
+    markdown: str,
+    collection: str,
+    snapshot_date: str | None,
+    object_store: LocalObjectStore,
+) -> PublishedVersion:
+    _validate_collection(collection=collection, snapshot_date=snapshot_date)
+    xml_key = source_xml_object_key(collection=collection, source_path=source_path, snapshot_date=snapshot_date)
+    markdown_key = markdown_object_key(collection=collection, source_path=source_path, snapshot_date=snapshot_date)
+    source_object = object_store.put_bytes(xml_content, key=xml_key, content_type="application/xml")
+    markdown_object = object_store.put_text(markdown, key=markdown_key, content_type="text/markdown")
+    ref = MarkdownDocumentRef(
+        collection=collection,
+        snapshot_date=snapshot_date,
+        source_path=source_path,
+        markdown_path=Path(markdown_key),
+    )
+    document = parse_markdown_document_text(ref, markdown)
+    return upsert_postgres_stored_document(
+        connection,
+        document,
+        markdown_object=markdown_object,
+        source_object=source_object,
+    )
 
 
 def point_in_time_markdown_root(output_root: Path, at: str) -> Path:
@@ -262,6 +350,11 @@ def markdown_ref_from_path(
 
 def parse_markdown_document(ref: MarkdownDocumentRef) -> ParsedMarkdownDocument:
     markdown = normalize_markdown_text(ref.markdown_path.read_text())
+    return parse_markdown_document_text(ref, markdown)
+
+
+def parse_markdown_document_text(ref: MarkdownDocumentRef, markdown: str) -> ParsedMarkdownDocument:
+    markdown = normalize_markdown_text(markdown)
     metadata, body = split_frontmatter(markdown)
     provisions = tuple(split_provisions(body))
     return ParsedMarkdownDocument(
@@ -329,22 +422,48 @@ def upsert_postgres_markdown_document(
     document: ParsedMarkdownDocument,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     object_store: LocalObjectStore | None = None,
-) -> None:
+) -> PublishedVersion:
     ref = document.ref
     object_store = object_store or LocalObjectStore()
-    calendar_year = int(ref.year) if ref.year and ref.year.isdigit() else None
-    document_uri = document.document_uri or f"https://www.legislation.gov.uk/{ref.document_id}"
-    version_kind = _postgres_version_kind(ref.collection)
-    snapshot_date = ref.snapshot_date if version_kind == "point_in_time" else None
     markdown_object_key = _storage_key(ref.markdown_path, output_root=output_root)
     xml_path = source_xml_path_for_markdown_ref(ref, output_root=output_root)
-    source_uri = _source_uri(document)
     markdown_object = object_store.put_file(ref.markdown_path, key=markdown_object_key)
     source_object = None
     if xml_path.exists():
         source_object = object_store.put_file(xml_path, key=_storage_key(xml_path, output_root=output_root))
+
+    return upsert_postgres_stored_document(
+        connection,
+        document,
+        markdown_object=markdown_object,
+        source_object=source_object,
+    )
+
+
+def upsert_postgres_stored_document(
+    connection: psycopg.Connection[Any],
+    document: ParsedMarkdownDocument,
+    markdown_object: StoredObject,
+    source_object: StoredObject | None,
+) -> PublishedVersion:
+    ref = document.ref
+    calendar_year = int(ref.year) if ref.year and ref.year.isdigit() else None
+    document_uri = document.document_uri or f"https://www.legislation.gov.uk/{ref.document_id}"
+    version_kind = _postgres_version_kind(ref.collection)
+    snapshot_date = ref.snapshot_date if version_kind == "point_in_time" else None
+    source_uri = _source_uri(document)
     source_object_key = source_object.key if source_object is not None else None
     source_sha256 = source_object.sha256 if source_object is not None else document.content_hash
+    version_id = existing_content_version_id(
+        connection,
+        document_id=ref.document_id,
+        version_kind=version_kind,
+        source_sha256=source_sha256,
+        markdown_sha256=document.content_hash,
+    )
+    created_version = version_id is None
+    if version_id is None:
+        version_id = available_version_id(connection, preferred_id=ref.version_id, content_hash=document.content_hash)
 
     upsert_storage_object(connection, markdown_object, source_url=None)
     if source_object is not None:
@@ -381,48 +500,47 @@ def upsert_postgres_markdown_document(
             list(ref.source_path),
         ),
     )
-    connection.execute(
-        """
-        insert into document_versions (
-            id, document_id, version_kind, snapshot_date, source_uri, source_object_key,
-            markdown_object_key, source_sha256, markdown_sha256, word_count, is_metadata_only
-        ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict(id) do update set
-            source_uri = excluded.source_uri,
-            source_object_key = excluded.source_object_key,
-            markdown_object_key = excluded.markdown_object_key,
-            source_sha256 = excluded.source_sha256,
-            markdown_sha256 = excluded.markdown_sha256,
-            word_count = excluded.word_count,
-            is_metadata_only = excluded.is_metadata_only
-        """,
-        (
-            ref.version_id,
-            ref.document_id,
-            version_kind,
-            snapshot_date,
-            source_uri,
-            source_object_key,
-            markdown_object_key,
-            source_sha256,
-            document.content_hash,
-            document.word_count,
-            document.is_metadata_only,
-        ),
-    )
+    if created_version:
+        connection.execute(
+            """
+            insert into document_versions (
+                id, document_id, version_kind, snapshot_date, source_uri, source_object_key,
+                markdown_object_key, source_sha256, markdown_sha256, word_count, is_metadata_only
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(id) do update set
+                source_uri = excluded.source_uri,
+                source_object_key = excluded.source_object_key,
+                markdown_object_key = excluded.markdown_object_key,
+                source_sha256 = excluded.source_sha256,
+                markdown_sha256 = excluded.markdown_sha256,
+                word_count = excluded.word_count,
+                is_metadata_only = excluded.is_metadata_only
+            """,
+            (
+                version_id,
+                ref.document_id,
+                version_kind,
+                snapshot_date,
+                source_uri,
+                source_object_key,
+                markdown_object.key,
+                source_sha256,
+                document.content_hash,
+                document.word_count,
+                document.is_metadata_only,
+            ),
+        )
     connection.execute(
         "update documents set latest_version_id = %s, updated_at = now() where id = %s",
-        (ref.version_id, ref.document_id),
+        (version_id, ref.document_id),
     )
-    connection.execute("delete from provisions where version_id = %s", (ref.version_id,))
-    connection.execute("delete from document_files where version_id = %s", (ref.version_id,))
 
     insert_document_file(
         connection,
         document_id=ref.document_id,
-        version_id=ref.version_id,
+        version_id=version_id,
         file_kind="markdown",
-        object_key=markdown_object_key,
+        object_key=markdown_object.key,
         sha256=document.content_hash,
         source_url=None,
         is_canonical=True,
@@ -431,7 +549,7 @@ def upsert_postgres_markdown_document(
         insert_document_file(
             connection,
             document_id=ref.document_id,
-            version_id=ref.version_id,
+            version_id=version_id,
             file_kind="clml_xml",
             object_key=source_object_key,
             sha256=source_sha256,
@@ -442,7 +560,7 @@ def upsert_postgres_markdown_document(
         insert_document_file(
             connection,
             document_id=ref.document_id,
-            version_id=ref.version_id,
+            version_id=version_id,
             file_kind="pdf",
             object_key=None,
             sha256=None,
@@ -451,17 +569,24 @@ def upsert_postgres_markdown_document(
         )
 
     for provision in document.provisions:
-        provision_id = f"{ref.version_id}:provision:{provision.ordinal}"
+        provision_id = f"{version_id}:provision:{provision.ordinal}"
         connection.execute(
             """
             insert into provisions (
                 id, version_id, document_id, ordinal, provision_type, number,
                 heading, anchor, markdown, plain_text
             ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            on conflict(id) do update set
+                provision_type = excluded.provision_type,
+                number = excluded.number,
+                heading = excluded.heading,
+                anchor = excluded.anchor,
+                markdown = excluded.markdown,
+                plain_text = excluded.plain_text
             """,
             (
                 provision_id,
-                ref.version_id,
+                version_id,
                 ref.document_id,
                 provision.ordinal,
                 _provision_type(provision),
@@ -472,6 +597,95 @@ def upsert_postgres_markdown_document(
                 provision.text,
             ),
         )
+
+    return PublishedVersion(
+        document_id=ref.document_id,
+        version_id=version_id,
+        source_uri=source_uri,
+        source_sha256=source_sha256,
+        created=created_version,
+    )
+
+
+def create_publish_run(
+    connection: psycopg.Connection[Any],
+    collection: str,
+    snapshot_date: str | None,
+    legislation_types: set[str],
+) -> int:
+    notes = f"collection={collection}"
+    if legislation_types:
+        notes = f"{notes}; legislation_types={','.join(sorted(legislation_types))}"
+    row = connection.execute(
+        """
+        insert into fetch_runs (mode, snapshot_date, notes)
+        values ('publish', %s, %s)
+        returning id
+        """,
+        (snapshot_date, notes),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Failed to create publish run.")
+    return int(row[0])
+
+
+def finish_publish_run(connection: psycopg.Connection[Any], publish_run_id: int) -> None:
+    connection.execute(
+        "update fetch_runs set finished_at = now() where id = %s",
+        (publish_run_id,),
+    )
+
+
+def record_publish_observation(
+    connection: psycopg.Connection[Any],
+    publish_run_id: int,
+    published_version: PublishedVersion,
+) -> None:
+    connection.execute(
+        """
+        insert into fetch_observations (
+            fetch_run_id, document_id, version_id, source_url, status, source_sha256
+        ) values (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            publish_run_id,
+            published_version.document_id,
+            published_version.version_id,
+            published_version.source_uri or published_version.document_id,
+            "fetched" if published_version.created else "not_modified",
+            published_version.source_sha256,
+        ),
+    )
+
+
+def existing_content_version_id(
+    connection: psycopg.Connection[Any],
+    document_id: str,
+    version_kind: str,
+    source_sha256: str,
+    markdown_sha256: str,
+) -> str | None:
+    row = connection.execute(
+        """
+        select id
+        from document_versions
+        where document_id = %s
+          and version_kind = %s
+          and source_sha256 = %s
+          and markdown_sha256 = %s
+        order by created_at, id
+        limit 1
+        """,
+        (document_id, version_kind, source_sha256, markdown_sha256),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def available_version_id(connection: psycopg.Connection[Any], preferred_id: str, content_hash: str) -> str:
+    row = connection.execute("select 1 from document_versions where id = %s", (preferred_id,)).fetchone()
+    if row is None:
+        return preferred_id
+    return f"{preferred_id}:{content_hash[:12]}"
 
 
 def upsert_storage_object(
@@ -514,9 +728,30 @@ def insert_document_file(
         """
         insert into document_files (
             document_id, version_id, file_kind, source_url, object_key, sha256, is_canonical
-        ) values (%s, %s, %s, %s, %s, %s, %s)
+        )
+        select %s, %s, %s, %s, %s, %s, %s
+        where not exists (
+            select 1
+            from document_files
+            where version_id = %s
+              and file_kind = %s
+              and coalesce(source_url, '') = coalesce(%s, '')
+              and coalesce(object_key, '') = coalesce(%s, '')
+        )
         """,
-        (document_id, version_id, file_kind, source_url, object_key, sha256, is_canonical),
+        (
+            document_id,
+            version_id,
+            file_kind,
+            source_url,
+            object_key,
+            sha256,
+            is_canonical,
+            version_id,
+            file_kind,
+            source_url,
+            object_key,
+        ),
     )
 
 
@@ -540,6 +775,7 @@ def slugify(value: str) -> str:
 def render_publish_report(report: PublishReport) -> str:
     lines = [
         f"Published {report.published} Markdown documents to {report.database_path}",
+        f"Created {report.created_versions} document versions; reused {report.reused_versions}",
         f"Scanned {report.scanned} files; {len(report.failures)} failures",
     ]
     if report.failures:
@@ -556,6 +792,36 @@ def source_xml_path_for_markdown_ref(ref: MarkdownDocumentRef, output_root: Path
     if ref.snapshot_date is None:
         raise ValueError("Point-in-time Markdown requires a snapshot date.")
     return output_root / "xml" / "point-in-time" / ref.snapshot_date / Path(*ref.source_path) / "data.xml"
+
+
+def source_xml_object_key(collection: str, source_path: tuple[str, ...], snapshot_date: str | None) -> str:
+    if collection == "enacted":
+        return (Path("xml") / "enacted" / Path(*source_path) / "data.xml").as_posix()
+    if collection == "point-in-time":
+        if snapshot_date is None:
+            raise ValueError("Point-in-time XML objects require a snapshot date.")
+        return (Path("xml") / "point-in-time" / snapshot_date / Path(*source_path) / "data.xml").as_posix()
+    raise ValueError(f"Unknown collection: {collection}")
+
+
+def markdown_object_key(collection: str, source_path: tuple[str, ...], snapshot_date: str | None) -> str:
+    output_path = Path(*source_path[:-1]) / f"{source_path[-1]}.md"
+    if collection == "enacted":
+        return (Path("markdown") / "enacted" / output_path).as_posix()
+    if collection == "point-in-time":
+        if snapshot_date is None:
+            raise ValueError("Point-in-time Markdown objects require a snapshot date.")
+        return (Path("markdown") / "point-in-time" / snapshot_date / output_path).as_posix()
+    raise ValueError(f"Unknown collection: {collection}")
+
+
+def _validate_collection(collection: str, snapshot_date: str | None) -> None:
+    if collection not in {"enacted", "point-in-time"}:
+        raise ValueError(f"Unknown Markdown collection: {collection}")
+    if collection == "point-in-time" and snapshot_date is None:
+        raise ValueError("Point-in-time Markdown publishing requires a snapshot date.")
+    if collection == "enacted" and snapshot_date is not None:
+        raise ValueError("Enacted Markdown publishing cannot use a snapshot date.")
 
 
 def _postgres_version_kind(collection: str) -> str:

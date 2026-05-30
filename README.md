@@ -2,7 +2,7 @@
 
 Represent UK legislation as structured, reproducible data.
 
-The project currently fetches legislation.gov.uk XML, converts it into deterministic Markdown, and publishes the generated corpus into a local Postgres database plus a filesystem-backed object store. The longer-term goal is to make changes to law inspectable with ordinary software tools: stable source data, readable text diffs, reviewable imports, and a backend that can serve the corpus through an API.
+The project currently ingests legislation.gov.uk XML into deterministic Markdown, stores XML and Markdown objects in a filesystem-backed object store, and catalogs the corpus in local Postgres. The longer-term goal is to make changes to law inspectable with ordinary software tools: stable source data, readable text diffs, reviewable imports, and a backend that can serve the corpus through an API.
 
 ## Current State
 
@@ -10,15 +10,13 @@ The working pipeline is:
 
 ```text
 legislation.gov.uk
-  -> output/xml/...
-  -> output/markdown/...
-  -> Postgres metadata/search tables
   -> var/object-store/... Markdown/XML objects
+  -> Postgres metadata/search tables
 ```
 
 Implemented pieces:
 
-- Python CLI for fetching, converting, auditing, seeding, and publishing legislation data.
+- Python CLI for object-store-native ingestion, corpus inspection, and legislation.gov.uk discovery.
 - Local Postgres via Docker Compose.
 - Goose migrations under `db/migrations`.
 - Schema dump under `db/schema.sql`.
@@ -26,7 +24,7 @@ Implemented pieces:
 - Postgres publishing for documents, versions, provisions, file metadata, and object metadata.
 - Markdown publishing normalization for legacy CP-1252 punctuation found in some source metadata.
 
-The current broad snapshot has been fetched and converted for configured non-draft legislation types. Some records are full-text CLML-derived Markdown; many older or metadata-only records are Markdown stubs pointing to PDF alternatives.
+The current broad snapshot can be ingested for configured non-draft legislation types. Some records are full-text CLML-derived Markdown; many older or metadata-only records are Markdown stubs pointing to PDF alternatives.
 
 ## Local Setup
 
@@ -62,32 +60,32 @@ make db-dump
 
 ## Main Workflow
 
-Fetch a point-in-time corpus:
+Load `.env`, then ingest a point-in-time corpus into the local object store and Postgres:
 
 ```bash
-uv run git-legislation fetch-point-in-time-corpus --at 2026-05-05
+set -a; . ./.env; set +a
+uv run git-legislation ingest-point-in-time-corpus --at 2026-05-05
 ```
 
 Limit to one or more legislation types:
 
 ```bash
-uv run git-legislation fetch-point-in-time-corpus --at 2026-05-05 --legislation-type ukpga
+uv run git-legislation ingest-point-in-time-corpus --at 2026-05-05 --legislation-type ukpga
 ```
 
-Convert fetched XML to Markdown:
+For a smaller run, ingest a single year:
 
 ```bash
-uv run git-legislation convert-point-in-time-corpus --at 2026-05-05
+uv run git-legislation ingest-point-in-time-year ukpga 2026 --at 2026-05-05
 ```
 
-Publish converted Markdown/XML into Postgres and the local object store:
+Or ingest one document:
 
 ```bash
-set -a; . ./.env; set +a
-uv run git-legislation publish-markdown-postgres --at 2026-05-05
+uv run git-legislation ingest-document ukpga/2026/14 --at 2026-05-05
 ```
 
-The publisher writes:
+The native ingestion path writes:
 
 ```text
 var/object-store/legislation/markdown/point-in-time/{date}/{type}/...
@@ -102,10 +100,10 @@ and upserts rows into:
 - `storage_objects`
 - `document_files`
 
-You can publish one type at a time:
+Check corpus counts across Postgres and the local object store:
 
 ```bash
-uv run git-legislation publish-markdown-postgres --at 2026-05-05 --legislation-type uksi
+uv run git-legislation corpus-counts
 ```
 
 ## Data Model
@@ -140,25 +138,6 @@ Key assumptions:
 - Effects feeds should be stored as audit metadata later, not used alone to rewrite text.
 
 ## Roadmap
-
-### 1. Stabilize Publishing
-
-- Make ingestion and publishing idempotent:
-  - record fetch/publish runs explicitly;
-  - track observations separately from document versions;
-  - use content hashes to avoid creating duplicate versions when a new run sees unchanged source content.
-- Move toward object-store-native ingestion:
-  - fetch XML directly into the object store;
-  - convert XML bytes/text in memory instead of requiring an intermediate file;
-  - write generated Markdown directly into the object store;
-  - upsert Postgres metadata, file links, versions, and provisions as the catalog/index.
-- Make `output/` optional rather than central:
-  - keep it as a local debug/export cache;
-  - add an explicit flag or command for writing filesystem artifacts when needed;
-  - avoid requiring `output/xml` and `output/markdown` as the normal pipeline boundary.
-- Add a command that reports corpus counts across source observations, document versions, provisions, and object storage.
-- Add better progress reporting for large publish runs.
-- Decide whether normalized Markdown should be persisted as a stored object only, written back to debug exports, or both.
 
 ### 2. Improve Markdown Quality
 

@@ -1,236 +1,57 @@
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import click
+import psycopg
 import typer
 
-from converters.clmltomarkdown import (
-    ConversionReport,
-    convert_document_markdown,
-    convert_xml_tree,
-    write_conversion_report,
-)
-from coverage_audit import (
-    audit_all_point_in_time_coverage,
-    audit_point_in_time_coverage,
-    clean_point_in_time_xml,
-    render_aggregate_coverage_audit,
-    render_cleanup_result,
-    render_coverage_audit,
-    render_point_in_time_failure_details,
-)
+from converters.clmltomarkdown import render_document_markdown_from_xml
 from fetchers.legislationdotgovdotuk import (
-    DEFAULT_OUTPUT_ROOT,
-    FetchReport,
+    POINT_IN_TIME_CORPUS_END_YEARS,
+    POINT_IN_TIME_CORPUS_START_YEARS,
     create_client,
     document_ref_from_source_path,
+    document_ref_xml_url,
     fetch_document_ref_xml,
-    fetch_document_xml,
-    fetch_enacted_corpus,
-    fetch_point_in_time_corpus,
     fetch_year_document_refs,
-    fetch_year_documents,
-    probe_fetch_report_failures,
-    read_fetch_report,
-    write_document_xml,
-    write_fetch_report,
-    write_source_document_xml,
 )
-from object_store import DEFAULT_OBJECT_STORE_ROOT
+from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
 from publishing import (
-    enacted_markdown_root,
-    point_in_time_markdown_root,
-    publish_markdown_to_postgres,
+    PublishReport,
+    create_publish_run,
+    finish_publish_run,
+    publish_document_text,
+    publish_document_text_to_postgres,
+    record_publish_observation,
     render_publish_report,
 )
-from seeding import BulkArchiveDownloadError, download_bulk_archive, seed_enacted_xml_from_archive
 
 app = typer.Typer(no_args_is_help=True)
+COUNT_TABLES = (
+    "documents",
+    "document_versions",
+    "provisions",
+    "storage_objects",
+    "document_files",
+    "fetch_runs",
+    "fetch_observations",
+)
+
+
+@dataclass(frozen=True)
+class CorpusCounts:
+    database_counts: dict[str, int]
+    object_count: int
+    object_bytes: int
 
 
 @app.callback()
 def main() -> None:
-    """Fetch and transform legislation data."""
-
-
-@app.command("fetch-xml")
-def fetch_xml(
-    legislation_type: str,
-    year: int,
-    number: int,
-    as_enacted: Annotated[bool, typer.Option("--as-enacted", help="Fetch /enacted/data.xml.")] = False,
-    at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
-    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    with create_client(log=typer.echo) as client:
-        content = fetch_document_xml(
-            client,
-            legislation_type=legislation_type,
-            year=year,
-            number=number,
-            as_enacted=as_enacted,
-            at=at,
-        )
-
-    path = write_document_xml(
-        content,
-        legislation_type=legislation_type,
-        year=year,
-        number=number,
-        as_enacted=as_enacted,
-        at=at,
-        output_root=output_root,
-    )
-    typer.echo(path)
-
-
-@app.command("fetch-source-xml")
-def fetch_source_xml(
-    source_path: str,
-    as_enacted: Annotated[bool, typer.Option("--as-enacted", help="Fetch /enacted/data.xml.")] = False,
-    at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
-    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    document = document_ref_from_source_path(source_path)
-    with create_client(log=typer.echo) as client:
-        content = fetch_document_ref_xml(
-            client,
-            document=document,
-            as_enacted=as_enacted,
-            at=at,
-        )
-
-    path = write_source_document_xml(
-        content,
-        source_path=document.path,
-        as_enacted=as_enacted,
-        at=at,
-        output_root=output_root,
-    )
-    typer.echo(path)
-
-
-@app.command("convert-xml")
-def convert_xml(
-    xml_path: Path,
-    output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    path = convert_document_markdown(xml_path, output_root=output_root)
-    typer.echo(path)
-
-
-@app.command("convert-enacted-corpus")
-def convert_enacted_corpus(
-    legislation_type: str,
-    output_root: Annotated[
-        Path, typer.Option(help="Root folder for converter input and output.")
-    ] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    report = ConversionReport.enacted(legislation_type=legislation_type)
-    paths = convert_xml_tree(
-        output_root / "xml" / "enacted" / legislation_type,
-        output_root=output_root,
-        report=report,
-        log=typer.echo,
-    )
-    typer.echo(f"Converted enacted {legislation_type}: {len(paths)} documents, {len(report.failures)} failures")
-    typer.echo(write_conversion_report(report, output_root=output_root))
-
-
-@app.command("convert-point-in-time-corpus")
-def convert_point_in_time_corpus(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to convert as YYYY-MM-DD.")],
-    legislation_types: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--legislation-type",
-            help="Legislation type to convert. Repeat to convert more than one. Defaults to every fetched type.",
-        ),
-    ] = None,
-    output_root: Annotated[
-        Path, typer.Option(help="Root folder for converter input and output.")
-    ] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    for legislation_type in _point_in_time_legislation_types_to_convert(
-        at=at,
-        legislation_types=legislation_types,
-        output_root=output_root,
-    ):
-        report = ConversionReport.point_in_time(legislation_type=legislation_type, at=at)
-        paths = convert_xml_tree(
-            output_root / "xml" / "point-in-time" / at / legislation_type,
-            output_root=output_root,
-            report=report,
-            log=typer.echo,
-        )
-        typer.echo(
-            f"Converted point-in-time {legislation_type} at {at}: "
-            f"{len(paths)} documents, {len(report.failures)} failures"
-        )
-        typer.echo(write_conversion_report(report, output_root=output_root))
-
-
-def _point_in_time_legislation_types_to_convert(
-    at: str,
-    legislation_types: list[str] | None,
-    output_root: Path,
-) -> list[str]:
-    if legislation_types:
-        return legislation_types
-
-    xml_root = output_root / "xml" / "point-in-time" / at
-    if not xml_root.exists():
-        return []
-    return sorted(path.name for path in xml_root.iterdir() if path.is_dir())
-
-
-@app.command("audit-point-in-time-coverage")
-def audit_point_in_time_coverage_command(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to audit as YYYY-MM-DD.")],
-    legislation_type: Annotated[str, typer.Option(help="Legislation type to audit.")] = "ukpga",
-    output_root: Annotated[Path, typer.Option(help="Root folder for audit input.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    audit = audit_point_in_time_coverage(at=at, legislation_type=legislation_type, output_root=output_root)
-    typer.echo(render_coverage_audit(audit))
-
-
-@app.command("audit-all-point-in-time-coverage")
-def audit_all_point_in_time_coverage_command(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to audit as YYYY-MM-DD.")],
-    output_root: Annotated[Path, typer.Option(help="Root folder for audit input.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    audits = audit_all_point_in_time_coverage(at=at, output_root=output_root, log=typer.echo)
-    typer.echo(render_aggregate_coverage_audit(audits, at=at))
-
-
-@app.command("point-in-time-failures")
-def point_in_time_failures_command(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to inspect as YYYY-MM-DD.")],
-    legislation_type: Annotated[str, typer.Option(help="Legislation type to inspect.")] = "ukpga",
-    output_root: Annotated[Path, typer.Option(help="Root folder for report input.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    typer.echo(render_point_in_time_failure_details(at=at, legislation_type=legislation_type, output_root=output_root))
-
-
-@app.command("clean-point-in-time-xml")
-def clean_point_in_time_xml_command(
-    at: Annotated[str, typer.Option("--at", help="Snapshot date to clean as YYYY-MM-DD.")],
-    legislation_type: Annotated[str, typer.Option(help="Legislation type to clean.")] = "ukpga",
-    dry_run: Annotated[
-        bool,
-        typer.Option("--dry-run", help="List files that would be removed without deleting them."),
-    ] = False,
-    output_root: Annotated[Path, typer.Option(help="Root folder for cleanup input.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    result = clean_point_in_time_xml(
-        at=at,
-        legislation_type=legislation_type,
-        output_root=output_root,
-        dry_run=dry_run,
-    )
-    typer.echo(render_cleanup_result(result))
+    """Ingest, transform, and publish legislation data."""
 
 
 @app.command("list-year")
@@ -242,143 +63,106 @@ def list_year(legislation_type: str, year: int) -> None:
         typer.echo(f"{document.legislation_type}/{document.year}/{document.number}  {document.title}")
 
 
-@app.command("fetch-year")
-def fetch_year(
-    legislation_type: str,
-    year: int,
+@app.command("ingest-document")
+def ingest_document(
+    source_path: Annotated[str, typer.Argument(help="Legislation source path, e.g. ukpga/2026/14.")],
+    at: Annotated[str | None, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")] = None,
     as_enacted: Annotated[bool, typer.Option("--as-enacted", help="Fetch /enacted/data.xml.")] = False,
-    at: Annotated[str | None, typer.Option("--at", help="Fetch point-in-time /YYYY-MM-DD/data.xml.")] = None,
-    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
 ) -> None:
+    if as_enacted and at is not None:
+        raise click.ClickException("--as-enacted cannot be combined with --at.")
+    if not as_enacted and at is None:
+        raise click.ClickException("--at is required unless --as-enacted is used.")
+    if database_url is None:
+        database_url = os.environ.get("DB_URL")
+    if database_url is None:
+        raise click.ClickException("Set DB_URL or pass --database-url.")
+
+    document = document_ref_from_source_path(source_path)
+    source_url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
     with create_client(log=typer.echo) as client:
-        paths = fetch_year_documents(
-            client,
+        xml_content = fetch_document_ref_xml(client, document=document, as_enacted=as_enacted, at=at)
+    markdown = render_document_markdown_from_xml(xml_content)
+    published_version = publish_document_text_to_postgres(
+        database_url=database_url,
+        source_path=document.path,
+        xml_content=xml_content,
+        markdown=markdown,
+        collection="enacted" if as_enacted else "point-in-time",
+        snapshot_date=None if as_enacted else at,
+        object_store_root=object_store_root,
+        object_store_bucket=object_store_bucket,
+    )
+    action = "created" if published_version.created else "reused"
+    typer.echo(f"Ingested {source_url}")
+    typer.echo(f"{action} document version {published_version.version_id}")
+
+
+@app.command("ingest-point-in-time-year")
+def ingest_point_in_time_year(
+    legislation_type: Annotated[str, typer.Argument(help="Legislation type to ingest, e.g. ukpga.")],
+    year: Annotated[int, typer.Argument(help="Year to ingest.")],
+    at: Annotated[str, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")],
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        report = _ingest_point_in_time_year(
+            connection,
+            client=client,
+            object_store=object_store,
             legislation_type=legislation_type,
             year=year,
-            as_enacted=as_enacted,
             at=at,
-            output_root=output_root,
-        )
-
-    for path in paths:
-        typer.echo(path)
-
-
-@app.command("fetch-enacted-corpus")
-def fetch_enacted_corpus_command(
-    legislation_type: str,
-    start_year: int,
-    end_year: Annotated[
-        int | None,
-        typer.Option(help="Last year to fetch. Defaults to the current year."),
-    ] = None,
-    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    report = FetchReport.enacted_corpus(
-        legislation_type=legislation_type,
-        start_year=start_year,
-        end_year=end_year or date.today().year,
-    )
-    with create_client(log=typer.echo) as client:
-        fetch_enacted_corpus(
-            client,
-            legislation_type=legislation_type,
-            start_year=start_year,
-            end_year=end_year or date.today().year,
-            output_root=output_root,
-            report=report,
             log=typer.echo,
         )
+        connection.commit()
 
-    typer.echo(write_fetch_report(report, output_root=output_root))
+    typer.echo(render_publish_report(report))
 
 
-@app.command("fetch-point-in-time-corpus")
-def fetch_point_in_time_corpus_command(
+@app.command("ingest-point-in-time-corpus")
+def ingest_point_in_time_corpus(
     at: Annotated[
         str | None,
-        typer.Option("--at", help="Snapshot date to fetch as YYYY-MM-DD. Defaults to today's latest/current XML."),
+        typer.Option("--at", help="Snapshot date to ingest as YYYY-MM-DD. Defaults to today's latest/current XML."),
     ] = None,
     legislation_types: Annotated[
         list[str] | None,
         typer.Option(
             "--legislation-type",
-            help="Legislation type to fetch. Repeat to fetch more than one. Defaults to every supported type.",
-        ),
-    ] = None,
-    output_root: Annotated[Path, typer.Option(help="Root folder for fetcher output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    snapshot_date = at or date.today().isoformat()
-    report = FetchReport.point_in_time_corpus(at=snapshot_date)
-    with create_client(log=typer.echo) as client:
-        fetch_point_in_time_corpus(
-            client,
-            at=at,
-            legislation_types=legislation_types,
-            output_root=output_root,
-            report=report,
-            log=typer.echo,
-        )
-
-    typer.echo(write_fetch_report(report, output_root=output_root))
-
-
-@app.command("probe-fetch-failures")
-def probe_fetch_failures(
-    report_path: Path,
-    limit: Annotated[
-        int | None,
-        typer.Option(help="Maximum number of unprobed failures to probe."),
-    ] = None,
-) -> None:
-    report = read_fetch_report(report_path)
-    with create_client(log=typer.echo) as client:
-        probed = probe_fetch_report_failures(
-            client,
-            report,
-            limit=limit,
-            log=typer.echo,
-        )
-
-    typer.echo(f"Probed {probed} failures")
-    typer.echo(write_fetch_report(report, output_root=report_path.parents[3]))
-
-
-@app.command("download-bulk-enacted-xml")
-def download_bulk_enacted_xml(
-    output_root: Annotated[Path, typer.Option(help="Root folder for seeding output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    try:
-        path = download_bulk_archive(dataset="enacted-epublished", data_format="xml", output_root=output_root)
-    except BulkArchiveDownloadError as error:
-        raise click.ClickException(str(error)) from error
-
-    typer.echo(path)
-
-
-@app.command("seed-enacted-xml")
-def seed_enacted_xml(
-    archive_path: Path,
-    output_root: Annotated[Path, typer.Option(help="Root folder for seeded XML output.")] = DEFAULT_OUTPUT_ROOT,
-) -> None:
-    paths = seed_enacted_xml_from_archive(archive_path=archive_path, output_root=output_root)
-
-    for path in paths:
-        typer.echo(path)
-
-
-@app.command("publish-markdown-postgres")
-def publish_markdown_postgres(
-    collection: Annotated[
-        str,
-        typer.Option("--collection", help="Markdown collection to publish: point-in-time or enacted."),
-    ] = "point-in-time",
-    at: Annotated[str | None, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")] = None,
-    legislation_types: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--legislation-type",
-            help="Legislation type to publish. Repeat to publish more than one. Defaults to every converted type.",
+            help="Legislation type to ingest. Repeat to ingest more than one. Defaults to every supported type.",
         ),
     ] = None,
     database_url: Annotated[
@@ -396,35 +180,165 @@ def publish_markdown_postgres(
         str,
         typer.Option("--object-store-bucket", help="Object store bucket name."),
     ] = "legislation",
-    output_root: Annotated[Path, typer.Option(help="Root folder for converter output.")] = DEFAULT_OUTPUT_ROOT,
 ) -> None:
+    snapshot_date = at or date.today().isoformat()
+    snapshot_year = date.fromisoformat(snapshot_date).year
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    report = PublishReport(collection="point-in-time", snapshot_date=snapshot_date, database_path="Postgres")
+
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        for legislation_type in _point_in_time_corpus_types(legislation_types):
+            start_year = POINT_IN_TIME_CORPUS_START_YEARS[legislation_type]
+            end_year = min(snapshot_year, POINT_IN_TIME_CORPUS_END_YEARS.get(legislation_type, snapshot_year))
+            for year in range(start_year, end_year + 1):
+                year_report = _ingest_point_in_time_year(
+                    connection,
+                    client=client,
+                    object_store=object_store,
+                    legislation_type=legislation_type,
+                    year=year,
+                    at=snapshot_date,
+                    log=typer.echo,
+                )
+                _merge_publish_report(report, year_report)
+                typer.echo(
+                    f"Ingested point-in-time {legislation_type} {year} at {snapshot_date}: "
+                    f"{year_report.published} published, {len(year_report.failures)} failures"
+                )
+        connection.commit()
+
+    typer.echo(render_publish_report(report))
+
+
+@app.command("corpus-counts")
+def corpus_counts(
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    bucket_root = object_store_root / object_store_bucket
+    with psycopg.connect(database_url) as connection:
+        counts = CorpusCounts(
+            database_counts=_database_counts(connection),
+            object_count=_object_count(bucket_root),
+            object_bytes=_object_bytes(bucket_root),
+        )
+    typer.echo(render_corpus_counts(counts))
+
+
+def _ingest_point_in_time_year(
+    connection: psycopg.Connection[Any],
+    client: Any,
+    object_store: LocalObjectStore,
+    legislation_type: str,
+    year: int,
+    at: str,
+    log: Callable[[str], None] | None,
+) -> PublishReport:
+    report = PublishReport(collection="point-in-time", snapshot_date=at, database_path="Postgres")
+    documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year, log=log)
+    publish_run_id = create_publish_run(
+        connection,
+        collection="point-in-time",
+        snapshot_date=at,
+        legislation_types={legislation_type},
+    )
+    for index, document in enumerate(documents, start=1):
+        report.scanned += 1
+        source_url = document_ref_xml_url(document=document, at=at)
+        try:
+            xml_content = fetch_document_ref_xml(client, document=document, at=at)
+            markdown = render_document_markdown_from_xml(xml_content)
+            published_version = publish_document_text(
+                connection,
+                source_path=document.path,
+                xml_content=xml_content,
+                markdown=markdown,
+                collection="point-in-time",
+                snapshot_date=at,
+                object_store=object_store,
+            )
+            record_publish_observation(connection, publish_run_id, published_version)
+        except Exception as error:
+            report.failures.append(f"{source_url}: {error}")
+            continue
+
+        report.published += 1
+        if published_version.created:
+            report.created_versions += 1
+        else:
+            report.reused_versions += 1
+        if index % 500 == 0:
+            typer.echo(
+                f"Ingested {index} of {len(documents)} {legislation_type} {year} documents: "
+                f"{report.published} published, {len(report.failures)} failures"
+            )
+
+    finish_publish_run(connection, publish_run_id)
+    return report
+
+
+def _point_in_time_corpus_types(legislation_types: list[str] | None) -> tuple[str, ...]:
+    selected_types = tuple(POINT_IN_TIME_CORPUS_START_YEARS) if legislation_types is None else tuple(legislation_types)
+    unknown_types = sorted(set(selected_types) - set(POINT_IN_TIME_CORPUS_START_YEARS))
+    if unknown_types:
+        raise click.ClickException(f"Unsupported point-in-time corpus legislation type(s): {', '.join(unknown_types)}")
+    return selected_types
+
+
+def _merge_publish_report(total: PublishReport, partial: PublishReport) -> None:
+    total.scanned += partial.scanned
+    total.published += partial.published
+    total.created_versions += partial.created_versions
+    total.reused_versions += partial.reused_versions
+    total.failures.extend(partial.failures)
+
+
+def _database_counts(connection: psycopg.Connection[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in COUNT_TABLES:
+        row = connection.execute(f"select count(*) from {table}").fetchone()
+        counts[table] = int(row[0]) if row is not None else 0
+    return counts
+
+
+def _object_count(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return sum(1 for path in root.rglob("*") if path.is_file())
+
+
+def _object_bytes(root: Path) -> int:
+    if not root.exists():
+        return 0
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+
+
+def render_corpus_counts(counts: CorpusCounts) -> str:
+    lines = ["Corpus counts:"]
+    lines.extend(f"- {table}: {counts.database_counts.get(table, 0)}" for table in COUNT_TABLES)
+    lines.append(f"- object_store_files: {counts.object_count}")
+    lines.append(f"- object_store_bytes: {counts.object_bytes}")
+    return "\n".join(lines)
+
+
+def _database_url_or_raise(database_url: str | None) -> str:
     if database_url is None:
         database_url = os.environ.get("DB_URL")
     if database_url is None:
         raise click.ClickException("Set DB_URL or pass --database-url.")
-
-    if collection == "point-in-time":
-        if at is None:
-            raise click.ClickException("--at is required when publishing point-in-time Markdown.")
-        markdown_root = point_in_time_markdown_root(output_root=output_root, at=at)
-        snapshot_date = at
-    elif collection == "enacted":
-        if at is not None:
-            raise click.ClickException("--at cannot be used when publishing enacted Markdown.")
-        markdown_root = enacted_markdown_root(output_root=output_root)
-        snapshot_date = None
-    else:
-        raise click.ClickException("--collection must be either point-in-time or enacted.")
-
-    report = publish_markdown_to_postgres(
-        markdown_root=markdown_root,
-        database_url=database_url,
-        output_root=output_root,
-        object_store_root=object_store_root,
-        object_store_bucket=object_store_bucket,
-        collection=collection,
-        snapshot_date=snapshot_date,
-        legislation_types=legislation_types,
-        log=typer.echo,
-    )
-    typer.echo(render_publish_report(report))
+    return database_url

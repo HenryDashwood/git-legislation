@@ -1,12 +1,12 @@
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
-import httpx
 import typer
 from typer.testing import CliRunner
 
 from git_legislation.cli import app
-from seeding import BulkArchiveDownloadError
 
 
 class FixedDate:
@@ -14,394 +14,16 @@ class FixedDate:
     def today(cls) -> object:
         return SimpleNamespace(isoformat=lambda: "2026-05-03")
 
-
-def test_fetch_xml_command_fetches_and_writes_xml(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_fetch_document_xml(
-        client: httpx.Client,
-        legislation_type: str,
-        year: int,
-        number: int,
-        as_enacted: bool,
-        at: str | None,
-    ) -> bytes:
-        calls["client"] = client
-        calls["fetch_args"] = (legislation_type, year, number, as_enacted, at)
-        return b"<Legislation>example</Legislation>"
-
-    def fake_write_document_xml(
-        content: bytes,
-        legislation_type: str,
-        year: int,
-        number: int,
-        as_enacted: bool,
-        at: str | None,
-        output_root: Path,
-    ) -> Path:
-        calls["write_args"] = (content, legislation_type, year, number, as_enacted, at, output_root)
-        return tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14" / "data.xml"
-
-    monkeypatch.setattr("git_legislation.cli.fetch_document_xml", fake_fetch_document_xml)
-    monkeypatch.setattr("git_legislation.cli.write_document_xml", fake_write_document_xml)
-
-    result = CliRunner().invoke(app, ["fetch-xml", "ukpga", "2026", "14", "--output-root", str(tmp_path)])
-
-    assert result.exit_code == 0
-    assert calls["fetch_args"] == ("ukpga", 2026, 14, False, None)
-    assert calls["write_args"] == (
-        b"<Legislation>example</Legislation>",
-        "ukpga",
-        2026,
-        14,
-        False,
-        None,
-        tmp_path,
-    )
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml" in result.output
-
-
-def test_fetch_source_xml_command_fetches_and_writes_latest_source_xml(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    document = SimpleNamespace(path=("ukpga", "Geo3", "44", "42"))
-
-    def fake_document_ref_from_source_path(source_path: str) -> object:
-        calls["source_path_arg"] = source_path
-        return document
-
-    def fake_fetch_document_ref_xml(
-        client: httpx.Client,
-        document: object,
-        as_enacted: bool,
-        at: str | None,
-    ) -> bytes:
-        calls["fetch_args"] = (client, document, as_enacted, at)
-        return b"<Legislation>example</Legislation>"
-
-    def fake_write_source_document_xml(
-        content: bytes,
-        source_path: tuple[str, ...],
-        as_enacted: bool,
-        at: str | None,
-        output_root: Path,
-    ) -> Path:
-        calls["write_args"] = (content, source_path, as_enacted, at, output_root)
-        return output_root / "xml" / "latest" / "ukpga" / "Geo3" / "44" / "42" / "data.xml"
-
-    monkeypatch.setattr("git_legislation.cli.document_ref_from_source_path", fake_document_ref_from_source_path)
-    monkeypatch.setattr("git_legislation.cli.fetch_document_ref_xml", fake_fetch_document_ref_xml)
-    monkeypatch.setattr("git_legislation.cli.write_source_document_xml", fake_write_source_document_xml)
-
-    result = CliRunner().invoke(
-        app,
-        ["fetch-source-xml", "ukpga/Geo3/44/42", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["source_path_arg"] == "ukpga/Geo3/44/42"
-    client, fetched_document, as_enacted, at = calls["fetch_args"]
-    assert isinstance(client, object)
-    assert fetched_document is document
-    assert as_enacted is False
-    assert at is None
-    assert calls["write_args"] == (
-        b"<Legislation>example</Legislation>",
-        ("ukpga", "Geo3", "44", "42"),
-        False,
-        None,
-        tmp_path,
-    )
-    assert "xml/latest/ukpga/Geo3/44/42/data.xml" in result.output
-
-
-def test_fetch_source_xml_command_fetches_and_writes_enacted_source_xml(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    document = SimpleNamespace(path=("ukpga", "Geo3", "44", "42"))
-
-    monkeypatch.setattr("git_legislation.cli.document_ref_from_source_path", lambda source_path: document)
-
-    def fake_fetch_document_ref_xml(
-        client: httpx.Client,
-        document: object,
-        as_enacted: bool,
-        at: str | None,
-    ) -> bytes:
-        calls["fetch_args"] = (document, as_enacted, at)
-        return b"<Legislation>example</Legislation>"
-
-    def fake_write_source_document_xml(
-        content: bytes,
-        source_path: tuple[str, ...],
-        as_enacted: bool,
-        at: str | None,
-        output_root: Path,
-    ) -> Path:
-        calls["write_args"] = (content, source_path, as_enacted, at, output_root)
-        return output_root / "xml" / "enacted" / "ukpga" / "Geo3" / "44" / "42" / "data.xml"
-
-    monkeypatch.setattr("git_legislation.cli.fetch_document_ref_xml", fake_fetch_document_ref_xml)
-    monkeypatch.setattr("git_legislation.cli.write_source_document_xml", fake_write_source_document_xml)
-
-    result = CliRunner().invoke(
-        app,
-        ["fetch-source-xml", "ukpga/Geo3/44/42", "--as-enacted", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["fetch_args"] == (document, True, None)
-    assert calls["write_args"] == (
-        b"<Legislation>example</Legislation>",
-        ("ukpga", "Geo3", "44", "42"),
-        True,
-        None,
-        tmp_path,
-    )
-    assert "xml/enacted/ukpga/Geo3/44/42/data.xml" in result.output
-
-
-def test_convert_xml_command_renders_and_writes_markdown(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    xml_path = tmp_path / "14.xml"
-
-    def fake_convert_document_markdown(path: Path, output_root: Path) -> Path:
-        calls["convert_args"] = (path, output_root)
-        return output_root / "markdown" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "14.md"
-
-    monkeypatch.setattr("git_legislation.cli.convert_document_markdown", fake_convert_document_markdown)
-
-    result = CliRunner().invoke(
-        app,
-        ["convert-xml", str(xml_path), "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["convert_args"] == (xml_path, tmp_path)
-    assert "markdown/point-in-time/2026-05-03/ukpga/2026/14.md" in result.output
-
-
-def test_convert_enacted_corpus_command_converts_fetched_tree(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_convert_xml_tree(xml_root: Path, output_root: Path, report: object, log: object) -> list[Path]:
-        calls["convert_xml_tree_args"] = (xml_root, output_root, report, log)
-        return [
-            output_root / "markdown" / "enacted" / "ukpga" / "2026" / "14.md",
-            output_root / "markdown" / "enacted" / "ukpga" / "2026" / "13.md",
-        ]
-
-    def fake_write_conversion_report(report: object, output_root: Path) -> Path:
-        calls["write_conversion_report_args"] = (report, output_root)
-        return output_root / "reports" / "convert" / "enacted" / "ukpga" / "report.json"
-
-    monkeypatch.setattr("git_legislation.cli.convert_xml_tree", fake_convert_xml_tree)
-    monkeypatch.setattr("git_legislation.cli.write_conversion_report", fake_write_conversion_report)
-
-    result = CliRunner().invoke(app, ["convert-enacted-corpus", "ukpga", "--output-root", str(tmp_path)])
-
-    assert result.exit_code == 0
-    xml_root, output_root, report, log = calls["convert_xml_tree_args"]
-    assert (xml_root, output_root) == (tmp_path / "xml" / "enacted" / "ukpga", tmp_path)
-    assert report.mode == "enacted"
-    assert report.legislation_type == "ukpga"
-    assert log is typer.echo
-    assert calls["write_conversion_report_args"] == (report, tmp_path)
-    assert "Converted enacted ukpga: 2 documents, 0 failures" in result.output
-    assert "reports/convert/enacted/ukpga/report.json" in result.output
-
-
-def test_convert_point_in_time_corpus_command_converts_fetched_tree(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {"convert_xml_tree_args": [], "write_conversion_report_args": []}
-    (tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga").mkdir(parents=True)
-    (tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi").mkdir(parents=True)
-
-    def fake_convert_xml_tree(xml_root: Path, output_root: Path, report: object, log: object) -> list[Path]:
-        calls["convert_xml_tree_args"].append((xml_root, output_root, report, log))
-        return [
-            output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026" / "14.md",
-            output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026" / "13.md",
-        ]
-
-    def fake_write_conversion_report(report: object, output_root: Path) -> Path:
-        calls["write_conversion_report_args"].append((report, output_root))
-        return output_root / "reports" / "convert" / "point-in-time" / "2026-05-03" / f"{report.legislation_type}.json"
-
-    monkeypatch.setattr("git_legislation.cli.convert_xml_tree", fake_convert_xml_tree)
-    monkeypatch.setattr("git_legislation.cli.write_conversion_report", fake_write_conversion_report)
-
-    result = CliRunner().invoke(
-        app,
-        ["convert-point-in-time-corpus", "--at", "2026-05-03", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert len(calls["convert_xml_tree_args"]) == 2
-    first_xml_root, first_output_root, first_report, first_log = calls["convert_xml_tree_args"][0]
-    second_xml_root, second_output_root, second_report, second_log = calls["convert_xml_tree_args"][1]
-    assert (first_xml_root, first_output_root) == (
-        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "ukpga",
-        tmp_path,
-    )
-    assert (second_xml_root, second_output_root) == (
-        tmp_path / "xml" / "point-in-time" / "2026-05-03" / "uksi",
-        tmp_path,
-    )
-    assert first_report.mode == "point-in-time"
-    assert first_report.legislation_type == "ukpga"
-    assert first_report.at == "2026-05-03"
-    assert first_log is typer.echo
-    assert second_report.legislation_type == "uksi"
-    assert second_log is typer.echo
-    assert calls["write_conversion_report_args"] == [(first_report, tmp_path), (second_report, tmp_path)]
-    assert "Converted point-in-time ukpga at 2026-05-03: 2 documents, 0 failures" in result.output
-    assert "reports/convert/point-in-time/2026-05-03/ukpga.json" in result.output
-    assert "Converted point-in-time uksi at 2026-05-03: 2 documents, 0 failures" in result.output
-    assert "reports/convert/point-in-time/2026-05-03/uksi.json" in result.output
-
-
-def test_convert_point_in_time_corpus_command_accepts_legislation_type_options(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {"convert_xml_tree_args": []}
-
-    def fake_convert_xml_tree(xml_root: Path, output_root: Path, report: object, log: object) -> list[Path]:
-        calls["convert_xml_tree_args"].append((xml_root, output_root, report, log))
-        return [output_root / "markdown" / "point-in-time" / "2026-05-03" / report.legislation_type / "2026.md"]
-
-    def fake_write_conversion_report(report: object, output_root: Path) -> Path:
-        return output_root / "reports" / "convert" / "point-in-time" / "2026-05-03" / f"{report.legislation_type}.json"
-
-    monkeypatch.setattr("git_legislation.cli.convert_xml_tree", fake_convert_xml_tree)
-    monkeypatch.setattr("git_legislation.cli.write_conversion_report", fake_write_conversion_report)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "convert-point-in-time-corpus",
-            "--at",
-            "2026-05-03",
-            "--legislation-type",
-            "ukla",
-            "--legislation-type",
-            "uksi",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert [call[2].legislation_type for call in calls["convert_xml_tree_args"]] == ["ukla", "uksi"]
-    assert "Converted point-in-time ukla at 2026-05-03: 1 documents, 0 failures" in result.output
-    assert "Converted point-in-time uksi at 2026-05-03: 1 documents, 0 failures" in result.output
-
-
-def test_audit_point_in_time_coverage_command_prints_summary(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    audit = SimpleNamespace(summary="audit")
-
-    def fake_audit_point_in_time_coverage(at: str, legislation_type: str, output_root: Path) -> object:
-        calls["audit_args"] = (at, legislation_type, output_root)
-        return audit
-
-    def fake_render_coverage_audit(rendered_audit: object) -> str:
-        calls["render_args"] = rendered_audit
-        return "Coverage audit for ukpga at 2026-05-03"
-
-    monkeypatch.setattr("git_legislation.cli.audit_point_in_time_coverage", fake_audit_point_in_time_coverage)
-    monkeypatch.setattr("git_legislation.cli.render_coverage_audit", fake_render_coverage_audit)
-
-    result = CliRunner().invoke(
-        app,
-        ["audit-point-in-time-coverage", "--at", "2026-05-03", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["audit_args"] == ("2026-05-03", "ukpga", tmp_path)
-    assert calls["render_args"] is audit
-    assert "Coverage audit for ukpga at 2026-05-03" in result.output
-
-
-def test_audit_all_point_in_time_coverage_command_prints_aggregate_summary(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    audits = [SimpleNamespace(legislation_type="ukpga"), SimpleNamespace(legislation_type="uksi")]
-
-    def fake_audit_all_point_in_time_coverage(at: str, output_root: Path, log: object) -> object:
-        calls["audit_args"] = (at, output_root, log)
-        return audits
-
-    def fake_render_aggregate_coverage_audit(rendered_audits: object, at: str) -> str:
-        calls["render_args"] = (rendered_audits, at)
-        return "Coverage audit for all legislation types at 2026-05-03"
-
-    monkeypatch.setattr("git_legislation.cli.audit_all_point_in_time_coverage", fake_audit_all_point_in_time_coverage)
-    monkeypatch.setattr("git_legislation.cli.render_aggregate_coverage_audit", fake_render_aggregate_coverage_audit)
-
-    result = CliRunner().invoke(
-        app,
-        ["audit-all-point-in-time-coverage", "--at", "2026-05-03", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["audit_args"] == ("2026-05-03", tmp_path, typer.echo)
-    assert calls["render_args"] == (audits, "2026-05-03")
-    assert "Coverage audit for all legislation types at 2026-05-03" in result.output
-
-
-def test_point_in_time_failures_command_prints_details(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_render_point_in_time_failure_details(at: str, legislation_type: str, output_root: Path) -> str:
-        calls["render_args"] = (at, legislation_type, output_root)
-        return "Failure details for ukpga at 2026-05-03"
-
-    monkeypatch.setattr(
-        "git_legislation.cli.render_point_in_time_failure_details",
-        fake_render_point_in_time_failure_details,
-    )
-
-    result = CliRunner().invoke(
-        app,
-        ["point-in-time-failures", "--at", "2026-05-03", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["render_args"] == ("2026-05-03", "ukpga", tmp_path)
-    assert "Failure details for ukpga at 2026-05-03" in result.output
-
-
-def test_clean_point_in_time_xml_command_prints_cleanup_summary(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    cleanup_result = SimpleNamespace()
-
-    def fake_clean_point_in_time_xml(
-        at: str,
-        legislation_type: str,
-        output_root: Path,
-        dry_run: bool,
-    ) -> object:
-        calls["clean_args"] = (at, legislation_type, output_root, dry_run)
-        return cleanup_result
-
-    def fake_render_cleanup_result(result: object) -> str:
-        calls["render_args"] = result
-        return "Would remove 1 local XML problem files"
-
-    monkeypatch.setattr("git_legislation.cli.clean_point_in_time_xml", fake_clean_point_in_time_xml)
-    monkeypatch.setattr("git_legislation.cli.render_cleanup_result", fake_render_cleanup_result)
-
-    result = CliRunner().invoke(
-        app,
-        ["clean-point-in-time-xml", "--at", "2026-05-03", "--dry-run", "--output-root", str(tmp_path)],
-    )
-
-    assert result.exit_code == 0
-    assert calls["clean_args"] == ("2026-05-03", "ukpga", tmp_path, True)
-    assert calls["render_args"] is cleanup_result
-    assert "Would remove 1 local XML problem files" in result.output
+    @classmethod
+    def fromisoformat(cls, value: str) -> date:
+        return date.fromisoformat(value)
 
 
 def test_list_year_command_fetches_and_prints_document_refs(monkeypatch) -> None:
     calls: dict[str, object] = {}
 
     def fake_fetch_year_document_refs(
-        client: httpx.Client,
+        client: object,
         legislation_type: str,
         year: int,
     ) -> list[SimpleNamespace]:
@@ -425,396 +47,331 @@ def test_list_year_command_fetches_and_prints_document_refs(monkeypatch) -> None
     assert "ukpga/2026/14  Industry and Exports (Financial Assistance) Act 2026" in result.output
 
 
-def test_fetch_year_command_fetches_and_writes_each_document(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
+def test_ingest_document_command_fetches_converts_and_publishes(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+    published_version = SimpleNamespace(created=True, version_id="point-in-time:2026-05-05:ukpga/2026/14")
 
-    def fake_fetch_year_documents(
-        client: httpx.Client,
-        legislation_type: str,
-        year: int,
-        as_enacted: bool,
-        at: str | None,
-        output_root: Path,
-    ) -> list[Path]:
-        calls["fetch_year_documents_args"] = (legislation_type, year, as_enacted, at, output_root)
-        return [
-            output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "14" / "data.xml",
-            output_root / "xml" / "point-in-time" / "2026-05-03" / legislation_type / str(year) / "13" / "data.xml",
-        ]
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
 
-    monkeypatch.setattr("git_legislation.cli.fetch_year_documents", fake_fetch_year_documents)
+        def __exit__(self, *args: object) -> None:
+            return None
 
-    result = CliRunner().invoke(app, ["fetch-year", "ukpga", "2026", "--output-root", str(tmp_path)])
+    def fake_fetch_document_ref_xml(client: object, document: object, as_enacted: bool, at: str | None) -> bytes:
+        calls["fetch_args"] = (client, document, as_enacted, at)
+        return b"<Legislation />"
 
-    assert result.exit_code == 0
-    assert calls["fetch_year_documents_args"] == ("ukpga", 2026, False, None, tmp_path)
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/14/data.xml" in result.output
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/13/data.xml" in result.output
+    def fake_render_document_markdown_from_xml(xml_content: bytes) -> str:
+        calls["render_args"] = xml_content
+        return "---\ntitle: Example\n---\n\n# Example\n"
 
+    def fake_publish_document_text_to_postgres(**kwargs: object) -> object:
+        calls["publish_args"] = kwargs
+        return published_version
 
-def test_fetch_enacted_corpus_command_fetches_year_range(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_fetch_enacted_corpus(
-        client: httpx.Client,
-        legislation_type: str,
-        start_year: int,
-        end_year: int,
-        output_root: Path,
-        report: object,
-        log: object,
-    ) -> list[Path]:
-        calls["fetch_enacted_corpus_args"] = (legislation_type, start_year, end_year, output_root, report, log)
-        return [
-            output_root / "xml" / "enacted" / legislation_type / "2025" / "1" / "data.xml",
-            output_root / "xml" / "enacted" / legislation_type / "2026" / "1" / "data.xml",
-        ]
-
-    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
-        calls["write_fetch_report_args"] = (report, output_root)
-        return output_root / "reports" / "fetch" / "enacted" / "ukpga" / "2025-2026.json"
-
-    monkeypatch.setattr("git_legislation.cli.fetch_enacted_corpus", fake_fetch_enacted_corpus)
-    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
-
-    result = CliRunner().invoke(
-        app,
-        ["fetch-enacted-corpus", "ukpga", "2025", "--end-year", "2026", "--output-root", str(tmp_path)],
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.fetch_document_ref_xml", fake_fetch_document_ref_xml)
+    monkeypatch.setattr(
+        "git_legislation.cli.render_document_markdown_from_xml",
+        fake_render_document_markdown_from_xml,
     )
-
-    assert result.exit_code == 0
-    legislation_type, start_year, end_year, output_root, report, log = calls["fetch_enacted_corpus_args"]
-    assert (legislation_type, start_year, end_year, output_root) == ("ukpga", 2025, 2026, tmp_path)
-    assert report.mode == "enacted"
-    assert log is typer.echo
-    assert calls["write_fetch_report_args"] == (report, tmp_path)
-    assert "xml/enacted/ukpga/2025/1/data.xml" not in result.output
-    assert "xml/enacted/ukpga/2026/1/data.xml" not in result.output
-    assert "reports/fetch/enacted/ukpga/2025-2026.json" in result.output
-
-
-def test_fetch_point_in_time_corpus_command_fetches_configured_corpus(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_fetch_point_in_time_corpus(
-        client: httpx.Client,
-        at: str,
-        legislation_types: list[str] | None,
-        output_root: Path,
-        report: object,
-        log: object,
-    ) -> list[Path]:
-        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
-        return [
-            output_root / "xml" / "point-in-time" / at / "ukpga" / "2025" / "1" / "data.xml",
-            output_root / "xml" / "point-in-time" / at / "ukpga" / "2026" / "1" / "data.xml",
-        ]
-
-    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
-        calls["write_fetch_report_args"] = (report, output_root)
-        return output_root / "reports" / "fetch" / "point-in-time" / "2026-05-03.json"
-
-    monkeypatch.setattr("git_legislation.cli.fetch_point_in_time_corpus", fake_fetch_point_in_time_corpus)
-    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
+    monkeypatch.setattr(
+        "git_legislation.cli.publish_document_text_to_postgres",
+        fake_publish_document_text_to_postgres,
+    )
 
     result = CliRunner().invoke(
         app,
         [
-            "fetch-point-in-time-corpus",
+            "ingest-document",
+            "ukpga/2026/14",
             "--at",
-            "2026-05-03",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
-    assert (at, legislation_types, output_root) == ("2026-05-03", None, tmp_path)
-    assert report.mode == "point-in-time"
-    assert log is typer.echo
-    assert calls["write_fetch_report_args"] == (report, tmp_path)
-    assert "xml/point-in-time/2026-05-03/ukpga/2025/1/data.xml" not in result.output
-    assert "xml/point-in-time/2026-05-03/ukpga/2026/1/data.xml" not in result.output
-    assert "reports/fetch/point-in-time/2026-05-03.json" in result.output
-
-
-def test_fetch_point_in_time_corpus_command_defaults_to_todays_latest_snapshot(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_fetch_point_in_time_corpus(
-        client: httpx.Client,
-        at: str | None,
-        legislation_types: list[str] | None,
-        output_root: Path,
-        report: object,
-        log: object,
-    ) -> list[Path]:
-        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
-        return [output_root / "xml" / "point-in-time" / "2026-05-03" / "ukpga" / "2026" / "1" / "data.xml"]
-
-    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
-        calls["write_fetch_report_args"] = (report, output_root)
-        return output_root / "reports" / "fetch" / "point-in-time" / "2026-05-03.json"
-
-    monkeypatch.setattr("git_legislation.cli.date", FixedDate)
-    monkeypatch.setattr("git_legislation.cli.fetch_point_in_time_corpus", fake_fetch_point_in_time_corpus)
-    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "fetch-point-in-time-corpus",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
-    assert (at, legislation_types, output_root) == (None, None, tmp_path)
-    assert report.mode == "point-in-time"
-    assert report.at == "2026-05-03"
-    assert log is typer.echo
-    assert calls["write_fetch_report_args"] == (report, tmp_path)
-    assert "reports/fetch/point-in-time/2026-05-03.json" in result.output
-
-
-def test_fetch_point_in_time_corpus_command_accepts_legislation_type_options(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_fetch_point_in_time_corpus(
-        client: httpx.Client,
-        at: str | None,
-        legislation_types: list[str] | None,
-        output_root: Path,
-        report: object,
-        log: object,
-    ) -> list[Path]:
-        calls["fetch_point_in_time_corpus_args"] = (at, legislation_types, output_root, report, log)
-        return []
-
-    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
-        calls["write_fetch_report_args"] = (report, output_root)
-        return output_root / "reports" / "fetch" / "point-in-time" / "2026-05-03.json"
-
-    monkeypatch.setattr("git_legislation.cli.fetch_point_in_time_corpus", fake_fetch_point_in_time_corpus)
-    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "fetch-point-in-time-corpus",
-            "--at",
-            "2026-05-03",
-            "--legislation-type",
-            "ukla",
-            "--legislation-type",
-            "uksi",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    at, legislation_types, output_root, report, log = calls["fetch_point_in_time_corpus_args"]
-    assert (at, legislation_types, output_root) == ("2026-05-03", ["ukla", "uksi"], tmp_path)
-    assert report.mode == "point-in-time"
-    assert report.at == "2026-05-03"
-    assert log is typer.echo
-    assert calls["write_fetch_report_args"] == (report, tmp_path)
-
-
-def test_probe_fetch_failures_command_updates_report(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    report_path = tmp_path / "reports" / "fetch" / "point-in-time" / "2026-05-03.json"
-    report = SimpleNamespace()
-
-    def fake_read_fetch_report(path: Path) -> object:
-        calls["read_fetch_report_arg"] = path
-        return report
-
-    def fake_probe_fetch_report_failures(
-        client: httpx.Client,
-        report: object,
-        limit: int | None,
-        log: object,
-    ) -> int:
-        calls["probe_fetch_report_failures_args"] = (client, report, limit, log)
-        return 2
-
-    def fake_write_fetch_report(report: object, output_root: Path) -> Path:
-        calls["write_fetch_report_args"] = (report, output_root)
-        return report_path
-
-    monkeypatch.setattr("git_legislation.cli.read_fetch_report", fake_read_fetch_report)
-    monkeypatch.setattr("git_legislation.cli.probe_fetch_report_failures", fake_probe_fetch_report_failures)
-    monkeypatch.setattr("git_legislation.cli.write_fetch_report", fake_write_fetch_report)
-
-    result = CliRunner().invoke(app, ["probe-fetch-failures", str(report_path), "--limit", "2"])
-
-    assert result.exit_code == 0
-    assert calls["read_fetch_report_arg"] == report_path
-    client, probed_report, limit, log = calls["probe_fetch_report_failures_args"]
-    assert isinstance(client, object)
-    assert probed_report is report
-    assert limit == 2
-    assert log is typer.echo
-    assert calls["write_fetch_report_args"] == (report, tmp_path)
-    assert "Probed 2 failures" in result.output
-    assert "reports/fetch/point-in-time/2026-05-03.json" in result.output
-
-
-def test_download_bulk_enacted_xml_command_downloads_enacted_clml(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-
-    def fake_download_bulk_archive(dataset: str, data_format: str, output_root: Path) -> Path:
-        calls["download_bulk_archive_args"] = (dataset, data_format, output_root)
-        return output_root / "bulk" / "research-legislation" / "texts" / dataset / data_format / "archive.zip"
-
-    monkeypatch.setattr("git_legislation.cli.download_bulk_archive", fake_download_bulk_archive)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download-bulk-enacted-xml",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert calls["download_bulk_archive_args"] == ("enacted-epublished", "xml", tmp_path)
-    assert "bulk/research-legislation/texts/enacted-epublished/xml/archive.zip" in result.output
-
-
-def test_download_bulk_enacted_xml_command_reports_download_error(monkeypatch, tmp_path: Path) -> None:
-    def fake_download_bulk_archive(dataset: str, data_format: str, output_root: Path) -> Path:
-        raise BulkArchiveDownloadError("Research Legislation returned 401 Unauthorized")
-
-    monkeypatch.setattr("git_legislation.cli.download_bulk_archive", fake_download_bulk_archive)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "download-bulk-enacted-xml",
-            "--output-root",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code == 1
-    assert "Research Legislation returned 401 Unauthorized" in result.output
-
-
-def test_seed_enacted_xml_command_seeds_xml_from_archive(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    archive_path = tmp_path / "bulk.zip"
-
-    def fake_seed_enacted_xml_from_archive(archive_path: Path, output_root: Path) -> list[Path]:
-        calls["seed_enacted_xml_from_archive_args"] = (archive_path, output_root)
-        return [
-            output_root / "xml" / "enacted" / "ukpga" / "2026" / "14" / "data.xml",
-            output_root / "xml" / "enacted" / "ukpga" / "2026" / "13" / "data.xml",
-        ]
-
-    monkeypatch.setattr("git_legislation.cli.seed_enacted_xml_from_archive", fake_seed_enacted_xml_from_archive)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "seed-enacted-xml",
-            str(archive_path),
-            "--output-root",
-            str(tmp_path / "output"),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert calls["seed_enacted_xml_from_archive_args"] == (archive_path, tmp_path / "output")
-    assert "xml/enacted/ukpga/2026/14/data.xml" in result.output
-    assert "xml/enacted/ukpga/2026/13/data.xml" in result.output
-
-
-def test_publish_markdown_postgres_command_publishes_point_in_time_markdown(monkeypatch, tmp_path: Path) -> None:
-    calls: dict[str, object] = {}
-    report = SimpleNamespace(database_path="Postgres")
-
-    def fake_publish_markdown_to_postgres(
-        markdown_root: Path,
-        database_url: str,
-        output_root: Path,
-        object_store_root: Path,
-        object_store_bucket: str,
-        collection: str,
-        snapshot_date: str | None,
-        legislation_types: list[str] | None,
-        log: object,
-    ) -> object:
-        calls["publish_args"] = (
-            markdown_root,
-            database_url,
-            output_root,
-            object_store_root,
-            object_store_bucket,
-            collection,
-            snapshot_date,
-            legislation_types,
-            log,
-        )
-        return report
-
-    def fake_render_publish_report(rendered_report: object) -> str:
-        calls["render_args"] = rendered_report
-        return "Published 2 Markdown documents"
-
-    monkeypatch.setattr("git_legislation.cli.publish_markdown_to_postgres", fake_publish_markdown_to_postgres)
-    monkeypatch.setattr("git_legislation.cli.render_publish_report", fake_render_publish_report)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "publish-markdown-postgres",
-            "--at",
-            "2026-05-03",
-            "--legislation-type",
-            "ukpga",
+            "2026-05-05",
             "--database-url",
             "postgres://example",
             "--object-store-root",
             str(tmp_path / "objects"),
-            "--output-root",
-            str(tmp_path),
         ],
     )
 
     assert result.exit_code == 0
-    assert calls["publish_args"] == (
-        tmp_path / "markdown" / "point-in-time" / "2026-05-03",
-        "postgres://example",
-        tmp_path,
-        tmp_path / "objects",
-        "legislation",
-        "point-in-time",
-        "2026-05-03",
-        ["ukpga"],
-        typer.echo,
+    assert calls["render_args"] == b"<Legislation />"
+    assert calls["publish_args"] == {
+        "database_url": "postgres://example",
+        "source_path": ("ukpga", "2026", "14"),
+        "xml_content": b"<Legislation />",
+        "markdown": "---\ntitle: Example\n---\n\n# Example\n",
+        "collection": "point-in-time",
+        "snapshot_date": "2026-05-05",
+        "object_store_root": tmp_path / "objects",
+        "object_store_bucket": "legislation",
+    }
+    assert "created document version point-in-time:2026-05-05:ukpga/2026/14" in result.output
+
+
+def test_ingest_point_in_time_year_command_publishes_each_document(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {"recorded": []}
+    documents = [
+        SimpleNamespace(path=("ukpga", "2026", "14")),
+        SimpleNamespace(path=("ukpga", "2026", "15")),
+    ]
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    connection = FakeConnection()
+
+    def fake_fetch_year_document_refs(client: object, legislation_type: str, year: int, log: object) -> object:
+        calls["refs_args"] = (client, legislation_type, year, log)
+        return documents
+
+    def fake_fetch_document_ref_xml(client: object, document: SimpleNamespace, at: str) -> bytes:
+        return f"<Legislation>{document.path[-1]}</Legislation>".encode()
+
+    def fake_render_document_markdown_from_xml(xml_content: bytes) -> str:
+        return f"---\ntitle: Example {xml_content.decode()}\n---\n\n# Example\n"
+
+    def fake_publish_document_text(connection_arg: object, **kwargs: Any) -> object:
+        kwargs["connection"] = connection_arg
+        calls.setdefault("publish_args", []).append(kwargs)
+        source_path = kwargs["source_path"]
+        return SimpleNamespace(
+            document_id="/".join(source_path),
+            version_id=f"point-in-time:2026-05-05:{'/'.join(source_path)}",
+            source_uri=None,
+            source_sha256="abc",
+            created=True,
+        )
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: connection)
+    monkeypatch.setattr("git_legislation.cli.fetch_year_document_refs", fake_fetch_year_document_refs)
+    monkeypatch.setattr("git_legislation.cli.fetch_document_ref_xml", fake_fetch_document_ref_xml)
+    monkeypatch.setattr(
+        "git_legislation.cli.render_document_markdown_from_xml",
+        fake_render_document_markdown_from_xml,
     )
-    assert calls["render_args"] is report
-    assert "Published 2 Markdown documents" in result.output
+    monkeypatch.setattr("git_legislation.cli.publish_document_text", fake_publish_document_text)
+    monkeypatch.setattr("git_legislation.cli.create_publish_run", lambda *args, **kwargs: 123)
+    monkeypatch.setattr(
+        "git_legislation.cli.finish_publish_run",
+        lambda *args, **kwargs: calls.setdefault("finished", True),
+    )
+    monkeypatch.setattr(
+        "git_legislation.cli.record_publish_observation",
+        lambda _connection, run_id, version: calls["recorded"].append((run_id, version.version_id)),
+    )
 
-
-def test_publish_markdown_postgres_command_requires_snapshot_date_for_point_in_time(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
         [
-            "publish-markdown-postgres",
+            "ingest-point-in-time-year",
+            "ukpga",
+            "2026",
+            "--at",
+            "2026-05-05",
             "--database-url",
             "postgres://example",
-            "--output-root",
-            str(tmp_path),
+            "--object-store-root",
+            str(tmp_path / "objects"),
         ],
     )
 
-    assert result.exit_code == 1
-    assert "--at is required" in result.output
+    assert result.exit_code == 0
+    assert calls["refs_args"][1:] == ("ukpga", 2026, typer.echo)
+    assert len(calls["publish_args"]) == 2
+    assert calls["publish_args"][0]["connection"] is connection
+    assert calls["publish_args"][0]["source_path"] == ("ukpga", "2026", "14")
+    assert calls["recorded"] == [
+        (123, "point-in-time:2026-05-05:ukpga/2026/14"),
+        (123, "point-in-time:2026-05-05:ukpga/2026/15"),
+    ]
+    assert calls["committed"] is True
+    assert "Published 2 Markdown documents to Postgres" in result.output
+
+
+def test_ingest_point_in_time_corpus_command_runs_supported_year_range(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, Any] = {"years": []}
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    connection = FakeConnection()
+
+    def fake_ingest_point_in_time_year(
+        connection_arg: object,
+        client: object,
+        object_store: object,
+        legislation_type: str,
+        year: int,
+        at: str,
+        log: object,
+    ) -> object:
+        calls["years"].append((connection_arg, client, legislation_type, year, at, log))
+        return SimpleNamespace(
+            scanned=1,
+            published=1,
+            created_versions=1,
+            reused_versions=0,
+            failures=[],
+        )
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: connection)
+    monkeypatch.setattr("git_legislation.cli._ingest_point_in_time_year", fake_ingest_point_in_time_year)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ingest-point-in-time-corpus",
+            "--legislation-type",
+            "ukmo",
+            "--at",
+            "2021-06-01",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert [(item[2], item[3], item[4], item[5]) for item in calls["years"]] == [
+        ("ukmo", 2020, "2021-06-01", typer.echo),
+        ("ukmo", 2021, "2021-06-01", typer.echo),
+    ]
+    assert all(item[0] is connection for item in calls["years"])
+    assert calls["committed"] is True
+    assert "Published 2 Markdown documents to Postgres" in result.output
+
+
+def test_ingest_point_in_time_corpus_command_defaults_to_todays_snapshot(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {"years": []}
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    def fake_ingest_point_in_time_year(connection: object, **kwargs: object) -> object:
+        kwargs["connection"] = connection
+        calls["years"].append(kwargs)
+        return SimpleNamespace(scanned=0, published=0, created_versions=0, reused_versions=0, failures=[])
+
+    monkeypatch.setattr("git_legislation.cli.date", FixedDate)
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli._point_in_time_corpus_types", lambda legislation_types: ("ukmo",))
+    monkeypatch.setattr("git_legislation.cli._ingest_point_in_time_year", fake_ingest_point_in_time_year)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ingest-point-in-time-corpus",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert {call["at"] for call in calls["years"]} == {"2026-05-03"}
+
+
+def test_corpus_counts_command_reports_database_and_object_store_counts(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "objects" / "legislation" / "markdown").mkdir(parents=True)
+    (tmp_path / "objects" / "legislation" / "markdown" / "a.md").write_text("hello")
+    (tmp_path / "objects" / "legislation" / "xml").mkdir()
+    (tmp_path / "objects" / "legislation" / "xml" / "a.xml").write_text("<xml />")
+
+    counts = {
+        "documents": 1,
+        "document_versions": 2,
+        "provisions": 3,
+        "storage_objects": 4,
+        "document_files": 5,
+        "fetch_runs": 6,
+        "fetch_observations": 7,
+    }
+
+    class FakeResult:
+        def __init__(self, count: int) -> None:
+            self.count = count
+
+        def fetchone(self) -> tuple[int]:
+            return (self.count,)
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, sql: str) -> FakeResult:
+            table = sql.split(" from ", 1)[1]
+            return FakeResult(counts[table])
+
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "corpus-counts",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "- documents: 1" in result.output
+    assert "- fetch_observations: 7" in result.output
+    assert "- object_store_files: 2" in result.output
+    assert "- object_store_bytes: 12" in result.output

@@ -9,4 +9,4 @@ migrate-status:
 	set -a; . ./.env; set +a; goose -dir db/migrations postgres "$$DB_URL" status
 
 db-dump:
-	set -a; . ./.env; set +a; pg_dump --schema-only --no-owner --no-privileges --no-comments --restrict-key=british_legislation_schema "$$DB_URL" > db/schema.sql
+	set -a; . ./.env; set +a; pg_dump --schema-only --no-owner --no-privileges --no-comments --restrict-key=britishlegislationschema "$$DB_URL" > db/schema.sql

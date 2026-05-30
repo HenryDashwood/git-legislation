@@ -1,7 +1,7 @@
 [project]
 name = "git-legislation"
 version = "0.1.0"
-description = "Represent legislation.gov.uk data as deterministic Markdown in Git."
+description = "Represent legislation.gov.uk data as structured Postgres and object-store records."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

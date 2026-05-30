@@ -3,10 +3,13 @@ from typing import Any
 
 import publishing
 from publishing import (
+    markdown_object_key,
     markdown_ref_from_path,
     normalize_markdown_text,
     parse_markdown_document,
+    publish_document_text_to_postgres,
     publish_markdown_to_postgres,
+    source_xml_object_key,
     source_xml_path_for_markdown_ref,
     split_frontmatter,
 )
@@ -152,6 +155,15 @@ def test_source_xml_path_for_markdown_ref_returns_matching_point_in_time_xml_pat
     )
 
 
+def test_object_keys_match_existing_output_layout() -> None:
+    assert source_xml_object_key("point-in-time", ("ukpga", "2026", "14"), "2026-05-05") == (
+        "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml"
+    )
+    assert markdown_object_key("point-in-time", ("ukpga", "2026", "14"), "2026-05-05") == (
+        "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+    )
+
+
 def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path, monkeypatch: Any) -> None:
     markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-05"
     markdown_path = markdown_root / "ukpga" / "2026" / "14.md"
@@ -174,10 +186,14 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
 
     assert report.scanned == 1
     assert report.published == 1
+    assert report.created_versions == 1
+    assert report.reused_versions == 0
     assert report.failures == []
     assert connection.committed
+    assert any("insert into fetch_runs" in sql for sql, _ in connection.executed)
     assert any("insert into documents" in sql for sql, _ in connection.executed)
     assert any("insert into document_versions" in sql for sql, _ in connection.executed)
+    assert any("insert into fetch_observations" in sql for sql, _ in connection.executed)
     assert any("insert into provisions" in sql for sql, _ in connection.executed)
     version_params = next(params for sql, params in connection.executed if "insert into document_versions" in sql)
     assert version_params[0] == "point-in-time:2026-05-05:ukpga/2026/14"
@@ -201,12 +217,88 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
     )
     assert stored_markdown_path.read_text() == MARKDOWN
     assert stored_xml_path.exists()
+    observation_params = next(params for sql, params in connection.executed if "insert into fetch_observations" in sql)
+    assert observation_params[2] == "point-in-time:2026-05-05:ukpga/2026/14"
+    assert observation_params[4] == "fetched"
+
+
+def test_publish_document_text_to_postgres_writes_objects_without_output_staging(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    connection = RecordingConnection()
+    monkeypatch.setattr(publishing.psycopg, "connect", lambda _: connection)
+
+    published_version = publish_document_text_to_postgres(
+        database_url="postgres://example",
+        source_path=("ukpga", "2026", "14"),
+        xml_content=b"<Legislation />",
+        markdown=MARKDOWN,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+        object_store_root=tmp_path / "objects",
+    )
+
+    assert published_version.version_id == "point-in-time:2026-05-05:ukpga/2026/14"
+    assert published_version.created
+    xml_path = (
+        tmp_path
+        / "objects"
+        / "legislation"
+        / "xml"
+        / "point-in-time"
+        / "2026-05-05"
+        / "ukpga"
+        / "2026"
+        / "14"
+        / "data.xml"
+    )
+    markdown_path = (
+        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    )
+    assert xml_path.read_bytes() == b"<Legislation />"
+    assert markdown_path.read_text() == MARKDOWN
+    assert any("insert into fetch_runs" in sql for sql, _ in connection.executed)
+    assert any("insert into fetch_observations" in sql for sql, _ in connection.executed)
+
+
+def test_publish_markdown_to_postgres_reuses_existing_content_version(tmp_path: Path, monkeypatch: Any) -> None:
+    markdown_root = tmp_path / "markdown" / "point-in-time" / "2026-05-06"
+    markdown_path = markdown_root / "ukpga" / "2026" / "14.md"
+    xml_path = tmp_path / "xml" / "point-in-time" / "2026-05-06" / "ukpga" / "2026" / "14" / "data.xml"
+    markdown_path.parent.mkdir(parents=True)
+    xml_path.parent.mkdir(parents=True)
+    markdown_path.write_text(MARKDOWN)
+    xml_path.write_text("<Legislation DocumentURI='http://www.legislation.gov.uk/ukpga/2026/14' />")
+    connection = RecordingConnection(existing_content_version_id="point-in-time:2026-05-05:ukpga/2026/14")
+    monkeypatch.setattr(publishing.psycopg, "connect", lambda _: connection)
+
+    report = publish_markdown_to_postgres(
+        markdown_root=markdown_root,
+        database_url="postgres://example",
+        output_root=tmp_path,
+        object_store_root=tmp_path / "objects",
+        collection="point-in-time",
+        snapshot_date="2026-05-06",
+    )
+
+    assert report.scanned == 1
+    assert report.published == 1
+    assert report.created_versions == 0
+    assert report.reused_versions == 1
+    assert not any("insert into document_versions" in sql for sql, _ in connection.executed)
+    update_latest_params = next(params for sql, params in connection.executed if sql.startswith("update documents"))
+    assert update_latest_params[0] == "point-in-time:2026-05-05:ukpga/2026/14"
+    observation_params = next(params for sql, params in connection.executed if "insert into fetch_observations" in sql)
+    assert observation_params[2] == "point-in-time:2026-05-05:ukpga/2026/14"
+    assert observation_params[4] == "not_modified"
 
 
 class RecordingConnection:
-    def __init__(self) -> None:
+    def __init__(self, existing_content_version_id: str | None = None) -> None:
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.committed = False
+        self.existing_content_version_id = existing_content_version_id
 
     def __enter__(self) -> "RecordingConnection":
         return self
@@ -214,8 +306,22 @@ class RecordingConnection:
     def __exit__(self, *_: Any) -> None:
         return None
 
-    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
-        self.executed.append((" ".join(sql.split()), params))
+    def execute(self, sql: str, params: tuple[Any, ...]) -> "RecordingCursor":
+        normalized_sql = " ".join(sql.split())
+        self.executed.append((normalized_sql, params))
+        if "insert into fetch_runs" in normalized_sql:
+            return RecordingCursor((1,))
+        if "from document_versions where document_id" in normalized_sql and self.existing_content_version_id:
+            return RecordingCursor((self.existing_content_version_id,))
+        return RecordingCursor(None)
 
     def commit(self) -> None:
         self.committed = True
+
+
+class RecordingCursor:
+    def __init__(self, row: tuple[Any, ...] | None) -> None:
+        self.row = row
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self.row

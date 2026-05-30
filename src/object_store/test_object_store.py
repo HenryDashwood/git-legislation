@@ -21,6 +21,18 @@ def test_local_object_store_copies_file_under_bucket_root(tmp_path: Path) -> Non
     assert stored.content_type == "text/markdown"
 
 
+def test_local_object_store_writes_bytes_under_bucket_root(tmp_path: Path) -> None:
+    store = LocalObjectStore(root=tmp_path / "objects", bucket="legislation")
+
+    stored = store.put_bytes(b"<xml />", key="xml/example.xml", content_type="application/xml")
+
+    assert stored.path == tmp_path / "objects" / "legislation" / "xml" / "example.xml"
+    assert stored.path.read_bytes() == b"<xml />"
+    assert stored.sha256 == file_sha256(stored.path)
+    assert stored.byte_size == len(b"<xml />")
+    assert stored.content_type == "application/xml"
+
+
 def test_local_object_store_rejects_unsafe_keys(tmp_path: Path) -> None:
     store = LocalObjectStore(root=tmp_path / "objects")
 
