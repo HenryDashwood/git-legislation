@@ -27,3 +27,4 @@ data/effects/*
 output/publish/*
 
 **/.env
+**/.envrc

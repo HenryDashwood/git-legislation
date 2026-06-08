@@ -20,6 +20,12 @@ from fetchers.legislationdotgovdotuk import (
     fetch_year_document_refs,
 )
 from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
+from pdf_parsing import (
+    normalize_liteparse_markdown_sample,
+    parse_pdf_sample,
+    render_liteparse_markdown_report,
+    render_pdf_parse_sample_report,
+)
 from publishing import (
     PublishReport,
     create_publish_run,
@@ -165,6 +171,17 @@ def ingest_point_in_time_corpus(
             help="Legislation type to ingest. Repeat to ingest more than one. Defaults to every supported type.",
         ),
     ] = None,
+    start_legislation_type: Annotated[
+        str | None,
+        typer.Option(
+            "--start-legislation-type",
+            help="Resume at this legislation type, skipping earlier supported types.",
+        ),
+    ] = None,
+    start_year: Annotated[
+        int | None,
+        typer.Option("--start-year", help="Resume at this year for the starting legislation type."),
+    ] = None,
     database_url: Annotated[
         str | None,
         typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
@@ -188,10 +205,19 @@ def ingest_point_in_time_corpus(
     report = PublishReport(collection="point-in-time", snapshot_date=snapshot_date, database_path="Postgres")
 
     with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
-        for legislation_type in _point_in_time_corpus_types(legislation_types):
-            start_year = POINT_IN_TIME_CORPUS_START_YEARS[legislation_type]
+        for legislation_type in _point_in_time_corpus_types(
+            legislation_types,
+            start_legislation_type=start_legislation_type,
+        ):
+            corpus_start_year = POINT_IN_TIME_CORPUS_START_YEARS[legislation_type]
             end_year = min(snapshot_year, POINT_IN_TIME_CORPUS_END_YEARS.get(legislation_type, snapshot_year))
-            for year in range(start_year, end_year + 1):
+            first_year = _first_corpus_year(
+                legislation_type=legislation_type,
+                start_legislation_type=start_legislation_type,
+                resume_year=start_year,
+                corpus_start_year=corpus_start_year,
+            )
+            for year in range(first_year, end_year + 1):
                 year_report = _ingest_point_in_time_year(
                     connection,
                     client=client,
@@ -202,11 +228,11 @@ def ingest_point_in_time_corpus(
                     log=typer.echo,
                 )
                 _merge_publish_report(report, year_report)
+                connection.commit()
                 typer.echo(
                     f"Ingested point-in-time {legislation_type} {year} at {snapshot_date}: "
                     f"{year_report.published} published, {len(year_report.failures)} failures"
                 )
-        connection.commit()
 
     typer.echo(render_publish_report(report))
 
@@ -238,6 +264,107 @@ def corpus_counts(
             object_bytes=_object_bytes(bucket_root),
         )
     typer.echo(render_corpus_counts(counts))
+
+
+@app.command("parse-pdf-sample")
+def parse_pdf_sample_command(
+    at: Annotated[str | None, typer.Option("--at", help="Limit to a point-in-time snapshot date.")] = None,
+    legislation_type: Annotated[
+        str | None,
+        typer.Option("--legislation-type", help="Limit to one legislation type, e.g. ukpga."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Maximum PDF-backed records to parse.")] = 10,
+    include_full_text: Annotated[
+        bool,
+        typer.Option("--include-full-text", help="Include records whose XML already has full text."),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Parse records even when extracted text already exists."),
+    ] = False,
+    no_ocr: Annotated[bool, typer.Option("--no-ocr", help="Disable LiteParse OCR.")] = False,
+    target_pages: Annotated[
+        str | None,
+        typer.Option("--target-pages", help='LiteParse page selection, e.g. "1-5,10".'),
+    ] = None,
+    lit_executable: Annotated[str, typer.Option("--lit-executable", help="LiteParse CLI executable.")] = "lit",
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        report = parse_pdf_sample(
+            connection,
+            client=client,
+            object_store=object_store,
+            at=at,
+            legislation_type=legislation_type,
+            limit=limit,
+            only_metadata=not include_full_text,
+            force=force,
+            lit_executable=lit_executable,
+            no_ocr=no_ocr,
+            target_pages=target_pages,
+        )
+        connection.commit()
+    typer.echo(render_pdf_parse_sample_report(report))
+
+
+@app.command("normalize-liteparse-markdown-sample")
+def normalize_liteparse_markdown_sample_command(
+    at: Annotated[str | None, typer.Option("--at", help="Limit to a point-in-time snapshot date.")] = None,
+    legislation_type: Annotated[
+        str | None,
+        typer.Option("--legislation-type", help="Limit to one legislation type, e.g. ukpga."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Maximum LiteParse reports to normalize.")] = 10,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Normalize records even when LiteParse Markdown already exists."),
+    ] = False,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    with psycopg.connect(database_url) as connection:
+        report = normalize_liteparse_markdown_sample(
+            connection,
+            object_store=object_store,
+            at=at,
+            legislation_type=legislation_type,
+            limit=limit,
+            force=force,
+        )
+        connection.commit()
+    typer.echo(render_liteparse_markdown_report(report))
 
 
 def _ingest_point_in_time_year(
@@ -292,12 +419,34 @@ def _ingest_point_in_time_year(
     return report
 
 
-def _point_in_time_corpus_types(legislation_types: list[str] | None) -> tuple[str, ...]:
+def _point_in_time_corpus_types(
+    legislation_types: list[str] | None,
+    start_legislation_type: str | None = None,
+) -> tuple[str, ...]:
     selected_types = tuple(POINT_IN_TIME_CORPUS_START_YEARS) if legislation_types is None else tuple(legislation_types)
-    unknown_types = sorted(set(selected_types) - set(POINT_IN_TIME_CORPUS_START_YEARS))
+    requested_types = set(selected_types)
+    if start_legislation_type is not None:
+        requested_types.add(start_legislation_type)
+    unknown_types = sorted(requested_types - set(POINT_IN_TIME_CORPUS_START_YEARS))
     if unknown_types:
         raise click.ClickException(f"Unsupported point-in-time corpus legislation type(s): {', '.join(unknown_types)}")
-    return selected_types
+    if start_legislation_type is None:
+        return selected_types
+    if start_legislation_type not in selected_types:
+        raise click.ClickException("--start-legislation-type must also be selected by --legislation-type.")
+    start_index = selected_types.index(start_legislation_type)
+    return selected_types[start_index:]
+
+
+def _first_corpus_year(
+    legislation_type: str,
+    start_legislation_type: str | None,
+    resume_year: int | None,
+    corpus_start_year: int,
+) -> int:
+    if resume_year is None or (start_legislation_type is not None and legislation_type != start_legislation_type):
+        return corpus_start_year
+    return max(corpus_start_year, resume_year)
 
 
 def _merge_publish_report(total: PublishReport, partial: PublishReport) -> None:

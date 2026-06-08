@@ -139,7 +139,7 @@ Key assumptions:
 
 ## Roadmap
 
-### 2. Improve Markdown Quality
+### Improve Markdown Quality
 
 - Add a Markdown quality audit command.
 - Compare XML structure against Markdown output for full-text CLML records.
@@ -147,28 +147,28 @@ Key assumptions:
 - Add representative snapshot tests across legislation types and eras.
 - Improve handling of schedules, tables, forms, images, commentary, repeals, and prospective text.
 
-### 3. Handle PDF-Backed Records
+### Handle PDF-Backed Records
 
 - Download/cache PDF alternatives into the object store.
 - Extract richer metadata from metadata-only XML.
 - Evaluate PDF text extraction quality on a sample set.
 - Decide how PDF-derived text should be marked, reviewed, and served.
 
-### 4. Build A Read API
+### Build A Read API
 
 - Add a Cloudflare Worker or other lightweight backend for read-only access.
 - Start with routes for document lookup, latest version, version files, and provisions.
 - Use Postgres for metadata/provisions and object storage for Markdown/XML/PDF content.
 - Add `sqlc` or another query-generation layer once the API query surface is stable.
 
-### 5. Incremental Updates
+### Incremental Updates
 
 - Poll the Publication Log.
 - Track the last processed publication event.
 - Fetch and publish new or republished XML.
 - Create reviewable generated changes for newly updated legislation.
 
-### 6. Later: Git Review Model
+### Later: Git Review Model
 
 - Generate a review-friendly statute repository from the canonical database/object-store corpus.
 - Experiment with provision-level files rather than one Markdown file per document.

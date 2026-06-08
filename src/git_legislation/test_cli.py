@@ -305,7 +305,10 @@ def test_ingest_point_in_time_corpus_command_defaults_to_todays_snapshot(monkeyp
     monkeypatch.setattr("git_legislation.cli.date", FixedDate)
     monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
     monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
-    monkeypatch.setattr("git_legislation.cli._point_in_time_corpus_types", lambda legislation_types: ("ukmo",))
+    monkeypatch.setattr(
+        "git_legislation.cli._point_in_time_corpus_types",
+        lambda legislation_types, start_legislation_type=None: ("ukmo",),
+    )
     monkeypatch.setattr("git_legislation.cli._ingest_point_in_time_year", fake_ingest_point_in_time_year)
 
     result = CliRunner().invoke(
@@ -321,6 +324,67 @@ def test_ingest_point_in_time_corpus_command_defaults_to_todays_snapshot(monkeyp
 
     assert result.exit_code == 0
     assert {call["at"] for call in calls["years"]} == {"2026-05-03"}
+
+
+def test_ingest_point_in_time_corpus_command_can_resume_from_type_and_year(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {"years": []}
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["commits"] = calls.get("commits", 0) + 1
+
+    def fake_ingest_point_in_time_year(
+        connection: object,
+        client: object,
+        object_store: object,
+        legislation_type: str,
+        year: int,
+        at: str,
+        log: object,
+    ) -> object:
+        calls["years"].append((legislation_type, year, at))
+        return SimpleNamespace(scanned=0, published=0, created_versions=0, reused_versions=0, failures=[])
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli._ingest_point_in_time_year", fake_ingest_point_in_time_year)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ingest-point-in-time-corpus",
+            "--start-legislation-type",
+            "ukmo",
+            "--start-year",
+            "2021",
+            "--at",
+            "2022-06-01",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["years"] == [
+        ("ukmo", 2021, "2022-06-01"),
+        ("ukmo", 2022, "2022-06-01"),
+    ]
+    assert calls["commits"] == 2
 
 
 def test_corpus_counts_command_reports_database_and_object_store_counts(monkeypatch, tmp_path: Path) -> None:
@@ -375,3 +439,128 @@ def test_corpus_counts_command_reports_database_and_object_store_counts(monkeypa
     assert "- fetch_observations: 7" in result.output
     assert "- object_store_files: 2" in result.output
     assert "- object_store_bytes: 12" in result.output
+
+
+def test_parse_pdf_sample_command_runs_experimental_parser(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    connection = FakeConnection()
+
+    def fake_parse_pdf_sample(connection_arg: object, **kwargs: Any) -> object:
+        calls["connection"] = connection_arg
+        calls["parse_args"] = kwargs
+        return SimpleNamespace(scanned=2, parsed=2, failures=[], artifacts=[])
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: connection)
+    monkeypatch.setattr("git_legislation.cli.parse_pdf_sample", fake_parse_pdf_sample)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "parse-pdf-sample",
+            "--at",
+            "2026-05-05",
+            "--legislation-type",
+            "ukpga",
+            "--limit",
+            "2",
+            "--include-full-text",
+            "--force",
+            "--no-ocr",
+            "--target-pages",
+            "1-2",
+            "--lit-executable",
+            "lit-test",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["connection"] is connection
+    assert calls["parse_args"]["at"] == "2026-05-05"
+    assert calls["parse_args"]["legislation_type"] == "ukpga"
+    assert calls["parse_args"]["limit"] == 2
+    assert calls["parse_args"]["only_metadata"] is False
+    assert calls["parse_args"]["force"] is True
+    assert calls["parse_args"]["no_ocr"] is True
+    assert calls["parse_args"]["target_pages"] == "1-2"
+    assert calls["parse_args"]["lit_executable"] == "lit-test"
+    assert calls["parse_args"]["object_store"].root == tmp_path / "objects"
+    assert calls["committed"] is True
+    assert "Parsed 2 PDF-backed documents with LiteParse" in result.output
+
+
+def test_normalize_liteparse_markdown_sample_command_runs_normalizer(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    connection = FakeConnection()
+
+    def fake_normalize_liteparse_markdown_sample(connection_arg: object, **kwargs: Any) -> object:
+        calls["connection"] = connection_arg
+        calls["normalize_args"] = kwargs
+        return SimpleNamespace(scanned=1, normalized=1, failures=[], markdown_object_keys=["markdown/liteparse/a.md"])
+
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: connection)
+    monkeypatch.setattr(
+        "git_legislation.cli.normalize_liteparse_markdown_sample",
+        fake_normalize_liteparse_markdown_sample,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "normalize-liteparse-markdown-sample",
+            "--at",
+            "2026-05-05",
+            "--legislation-type",
+            "ukpga",
+            "--limit",
+            "1",
+            "--force",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["connection"] is connection
+    assert calls["normalize_args"]["at"] == "2026-05-05"
+    assert calls["normalize_args"]["legislation_type"] == "ukpga"
+    assert calls["normalize_args"]["limit"] == 1
+    assert calls["normalize_args"]["force"] is True
+    assert calls["normalize_args"]["object_store"].root == tmp_path / "objects"
+    assert calls["committed"] is True
+    assert "Normalized 1 LiteParse reports to Markdown" in result.output

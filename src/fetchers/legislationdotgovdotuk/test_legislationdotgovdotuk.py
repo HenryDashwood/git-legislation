@@ -571,7 +571,7 @@ def test_legislation_client_retries_connection_resets(monkeypatch) -> None:
     assert calls == 2
 
 
-def test_legislation_client_does_not_retry_http_status_errors(monkeypatch) -> None:
+def test_legislation_client_does_not_retry_client_http_status_errors(monkeypatch) -> None:
     calls = 0
 
     def fake_urlopen(request: object, timeout: float) -> object:
@@ -591,6 +591,79 @@ def test_legislation_client_does_not_retry_http_status_errors(monkeypatch) -> No
 
     assert response.status_code == 404
     assert calls == 1
+
+
+def test_legislation_client_retries_server_http_status_errors(monkeypatch) -> None:
+    calls = 0
+    sleep_calls: list[float] = []
+    messages: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"<feed />"
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                url="https://www.legislation.gov.uk/uksi/2004/data.feed?page=69",
+                code=504,
+                msg="Gateway Timeout",
+                hdrs=Message(),
+                fp=None,
+            )
+        return Response()
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
+
+    response = create_client(log=messages.append).get("https://www.legislation.gov.uk/uksi/2004/data.feed?page=69")
+
+    assert response.status_code == 200
+    assert calls == 2
+    assert sleep_calls == [5.0]
+    assert messages == [
+        "Server error 504 fetching https://www.legislation.gov.uk/uksi/2004/data.feed?page=69; "
+        "waiting 5s before retry 1/5"
+    ]
+
+
+def test_legislation_client_returns_server_error_after_retries_are_exhausted(monkeypatch) -> None:
+    calls = 0
+    sleep_calls: list[float] = []
+
+    def fake_urlopen(request: object, timeout: float) -> object:
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            url="https://www.legislation.gov.uk/uksi/2004/data.feed?page=69",
+            code=504,
+            msg="Gateway Timeout",
+            hdrs=Message(),
+            fp=None,
+        )
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
+
+    client = create_client()
+    client.server_error_retries = 2
+    client.server_error_backoff_seconds = 3.0
+
+    response = client.get("https://www.legislation.gov.uk/uksi/2004/data.feed?page=69")
+
+    assert response.status_code == 504
+    assert calls == 3
+    assert sleep_calls == [3.0, 6.0]
 
 
 def test_legislation_client_retries_rate_limits_with_retry_after(monkeypatch) -> None:

@@ -32,6 +32,9 @@ EMPTY_YEAR_LOG_INTERVAL = 100
 FEED_NUMBER_RANGE_SIZE = 100
 REQUEST_RETRY_DELAY_SECONDS = 1.0
 REQUEST_RETRIES = 2
+REQUEST_SERVER_ERROR_RETRIES = 5
+REQUEST_SERVER_ERROR_BACKOFF_SECONDS = 5.0
+REQUEST_SERVER_ERROR_MAX_BACKOFF_SECONDS = 60.0
 REQUEST_RATE_LIMIT_RETRIES = 5
 REQUEST_RATE_LIMIT_BACKOFF_SECONDS = 30.0
 REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS = 300.0
@@ -182,6 +185,9 @@ class LegislationClient:
         headers: dict[str, str] | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
         retries: int = REQUEST_RETRIES,
+        server_error_retries: int = REQUEST_SERVER_ERROR_RETRIES,
+        server_error_backoff_seconds: float = REQUEST_SERVER_ERROR_BACKOFF_SECONDS,
+        server_error_max_backoff_seconds: float = REQUEST_SERVER_ERROR_MAX_BACKOFF_SECONDS,
         rate_limit_retries: int = REQUEST_RATE_LIMIT_RETRIES,
         rate_limit_backoff_seconds: float = REQUEST_RATE_LIMIT_BACKOFF_SECONDS,
         rate_limit_max_backoff_seconds: float = REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS,
@@ -190,6 +196,9 @@ class LegislationClient:
         self.headers = headers or {}
         self.timeout = timeout
         self.retries = retries
+        self.server_error_retries = server_error_retries
+        self.server_error_backoff_seconds = server_error_backoff_seconds
+        self.server_error_max_backoff_seconds = server_error_max_backoff_seconds
         self.rate_limit_retries = rate_limit_retries
         self.rate_limit_backoff_seconds = rate_limit_backoff_seconds
         self.rate_limit_max_backoff_seconds = rate_limit_max_backoff_seconds
@@ -210,6 +219,7 @@ class LegislationClient:
         request = Request(url, headers=self.headers)
         connection_attempts = 0
         rate_limit_attempts = 0
+        server_error_attempts = 0
 
         while True:
             try:
@@ -223,6 +233,19 @@ class LegislationClient:
                         self.log,
                         f"Rate limited fetching {url}; waiting {delay_seconds:g}s before retry "
                         f"{rate_limit_attempts}/{self.rate_limit_retries}",
+                    )
+                    time.sleep(delay_seconds)
+                    continue
+                if error.code in {500, 502, 503, 504} and server_error_attempts < self.server_error_retries:
+                    server_error_attempts += 1
+                    delay_seconds = min(
+                        self.server_error_backoff_seconds * (2 ** (server_error_attempts - 1)),
+                        self.server_error_max_backoff_seconds,
+                    )
+                    _log(
+                        self.log,
+                        f"Server error {error.code} fetching {url}; waiting {delay_seconds:g}s before retry "
+                        f"{server_error_attempts}/{self.server_error_retries}",
                     )
                     time.sleep(delay_seconds)
                     continue
