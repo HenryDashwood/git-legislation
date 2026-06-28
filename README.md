@@ -106,6 +106,34 @@ Check corpus counts across Postgres and the local object store:
 uv run git-legislation corpus-counts
 ```
 
+## Read API
+
+Run the read-only FastAPI service against the local Postgres database and object store:
+
+```bash
+set -a; . ./.env; set +a
+uv run git-legislation-api
+```
+
+The service defaults to `http://127.0.0.1:8000`. Set `CORS_ORIGINS` in `.env` to allow a web app origin, for example:
+
+```bash
+CORS_ORIGINS=http://localhost:5173
+```
+
+Useful v1 endpoints:
+
+- `GET /healthz`
+- `GET /documents?legislation_type=ukpga&year=2026&limit=50&offset=0`
+- `GET /documents/ukpga/2026/14`
+- `GET /documents/ukpga/2026/14/versions`
+- `GET /documents/ukpga/2026/14/versions/latest`
+- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/provisions`
+- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/files`
+- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/content`
+
+Metadata endpoints read from Postgres. Content endpoints resolve canonical Markdown or XML through database file records, then serve bytes from `var/object-store`.
+
 ## Data Model
 
 The core distinction is:
@@ -154,11 +182,11 @@ Key assumptions:
 - Evaluate PDF text extraction quality on a sample set.
 - Decide how PDF-derived text should be marked, reviewed, and served.
 
-### Build A Read API
+### Extend The Read API
 
-- Add a Cloudflare Worker or other lightweight backend for read-only access.
-- Start with routes for document lookup, latest version, version files, and provisions.
-- Use Postgres for metadata/provisions and object storage for Markdown/XML/PDF content.
+- Add snapshot-scoped browse routes and richer search over titles/provisions.
+- Add a Cloudflare Worker or other lightweight hosted backend for read-only access.
+- Add range requests or signed object access for large XML/PDF content.
 - Add `sqlc` or another query-generation layer once the API query surface is stable.
 
 ### Incremental Updates

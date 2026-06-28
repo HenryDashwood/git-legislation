@@ -1,0 +1,31 @@
+"""Shared API parameter types."""
+
+from enum import StrEnum
+
+
+class LegislationTypeCode(StrEnum):
+    AEP = "aep"
+    AOSP = "aosp"
+    AIP = "aip"
+    APGB = "apgb"
+    GBPPA = "gbppa"
+    GBLA = "gbla"
+    UKPGA = "ukpga"
+    UKLA = "ukla"
+    UKPPA = "ukppa"
+    APNI = "apni"
+    UKCM = "ukcm"
+    NISRO = "nisro"
+    UKSI = "uksi"
+    NISI = "nisi"
+    MNIA = "mnia"
+    NISR = "nisr"
+    ASP = "asp"
+    SSI = "ssi"
+    WSI = "wsi"
+    NIA = "nia"
+    MWA = "mwa"
+    ANAW = "anaw"
+    UKCI = "ukci"
+    ASC = "asc"
+    UKMO = "ukmo"
