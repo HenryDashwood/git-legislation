@@ -111,6 +111,97 @@ def test_document_sections_handles_unnumbered_p1groups(tmp_path: Path) -> None:
     assert sections[0].commentary_refs == []
 
 
+def test_document_sections_reads_direct_body_paragraphs(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(
+        """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Body>
+    <P>
+      <Text>Item To eschow the gret herschip <CommentaryRef Ref="f1"/> And gif the creditour takkis.</Text>
+    </P>
+  </Body>
+</Legislation>
+"""
+    )
+
+    sections = document_sections(xml_path)
+
+    assert len(sections) == 1
+    assert sections[0].number == ""
+    assert sections[0].title == ""
+    assert sections[0].lines == ["Item To eschow the gret herschip And gif the creditour takkis."]
+    assert sections[0].commentary_refs == ["f1"]
+
+
+def test_document_sections_recurses_into_pblocks(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(
+        """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Body>
+    <Pblock>
+      <Title>Introduction</Title>
+      <P1group>
+        <Title>The Convention Rights.</Title>
+        <P1>
+          <Pnumber>1</Pnumber>
+          <P1para>
+            <P2>
+              <Pnumber>1</Pnumber>
+              <P2para>
+                <Text>In this Act the Convention rights means the rights set out in—</Text>
+                <P3>
+                  <Pnumber>a</Pnumber>
+                  <P3para><Text>Articles 2 to 12 and 14 of the Convention,</Text></P3para>
+                </P3>
+              </P2para>
+            </P2>
+          </P1para>
+        </P1>
+      </P1group>
+    </Pblock>
+  </Body>
+</Legislation>
+"""
+    )
+
+    sections = document_sections(xml_path)
+
+    assert [(section.number, section.title) for section in sections] == [("1", "The Convention Rights.")]
+    assert sections[0].lines == [
+        "(1) In this Act the Convention rights means the rights set out in—",
+        "(a) Articles 2 to 12 and 14 of the Convention,",
+    ]
+
+
+def test_document_sections_recurses_into_parts(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(
+        """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Body>
+    <Part>
+      <Title>Part 1 Introductory</Title>
+      <P1group>
+        <Title>Meaning of example</Title>
+        <P1>
+          <Pnumber>1</Pnumber>
+          <P1para><Text>Example body text.</Text></P1para>
+        </P1>
+      </P1group>
+    </Part>
+  </Body>
+</Legislation>
+"""
+    )
+
+    sections = document_sections(xml_path)
+
+    assert [(section.number, section.title) for section in sections] == [("1", "Meaning of example")]
+    assert sections[0].lines == ["Example body text."]
+
+
 def test_document_sections_reads_commentary_refs() -> None:
     sections = document_sections(SAMPLE_XML)
 

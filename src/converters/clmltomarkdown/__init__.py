@@ -127,22 +127,10 @@ def document_sections(xml_path: Path) -> list[DocumentSection]:
 
 
 def document_sections_from_root(root: ElementTree.Element) -> list[DocumentSection]:
-    sections: list[DocumentSection] = []
-
-    for group in root.findall(".//leg:Body/leg:P1group", namespaces=NAMESPACES):
-        title = group.findtext("leg:Title", namespaces=NAMESPACES) or ""
-        number_element = group.find("leg:P1/leg:Pnumber", namespaces=NAMESPACES)
-
-        sections.append(
-            DocumentSection(
-                number=_element_text(number_element) if number_element is not None else "",
-                title=" ".join(title.split()),
-                lines=_section_lines(group),
-                commentary_refs=_commentary_refs(number_element),
-            )
-        )
-
-    return sections
+    body = root.find(".//leg:Body", namespaces=NAMESPACES)
+    if body is None:
+        return []
+    return _body_sections(body)
 
 
 def document_commentaries(xml_path: Path) -> dict[str, str]:
@@ -340,11 +328,81 @@ def _log(log: Callable[[str], None] | None, message: str) -> None:
         log(message)
 
 
+def _body_sections(element: ElementTree.Element) -> list[DocumentSection]:
+    sections: list[DocumentSection] = []
+
+    for child in element:
+        tag = _local_name(child.tag)
+        if tag == "P1group":
+            sections.append(_p1group_section(child))
+        elif tag == "P":
+            section = _loose_paragraph_section(child)
+            if section.lines:
+                sections.append(section)
+        elif tag == "P1":
+            section = _numbered_section(child)
+            if section.lines:
+                sections.append(section)
+        elif tag in {"Pblock", "Part", "Chapter"}:
+            child_sections = _body_sections(child)
+            if child_sections:
+                sections.extend(child_sections)
+            else:
+                section = _container_section(child)
+                if section.lines:
+                    sections.append(section)
+        else:
+            sections.extend(_body_sections(child))
+
+    return sections
+
+
+def _p1group_section(group: ElementTree.Element) -> DocumentSection:
+    title = group.findtext("leg:Title", namespaces=NAMESPACES) or ""
+    number_element = group.find("leg:P1/leg:Pnumber", namespaces=NAMESPACES)
+    return DocumentSection(
+        number=_element_text(number_element) if number_element is not None else "",
+        title=" ".join(title.split()),
+        lines=_section_lines(group),
+        commentary_refs=_commentary_refs(number_element),
+    )
+
+
+def _loose_paragraph_section(paragraph: ElementTree.Element) -> DocumentSection:
+    return DocumentSection(
+        number="",
+        title="",
+        lines=_paragraph_lines(paragraph) or [_element_text(paragraph)],
+        commentary_refs=_commentary_refs(paragraph),
+    )
+
+
+def _numbered_section(paragraph: ElementTree.Element) -> DocumentSection:
+    number_element = paragraph.find("leg:Pnumber", namespaces=NAMESPACES)
+    para_element = paragraph.find(f"leg:{_local_name(paragraph.tag)}para", namespaces=NAMESPACES)
+    return DocumentSection(
+        number=_element_text(number_element) if number_element is not None else "",
+        title="",
+        lines=_paragraph_lines(para_element) if para_element is not None else _paragraph_lines(paragraph),
+        commentary_refs=_commentary_refs(number_element),
+    )
+
+
+def _container_section(container: ElementTree.Element) -> DocumentSection:
+    title = container.findtext("leg:Title", namespaces=NAMESPACES) or ""
+    return DocumentSection(
+        number="",
+        title=" ".join(title.split()),
+        lines=_paragraph_lines(container) or [_element_text(container)],
+        commentary_refs=_commentary_refs(container),
+    )
+
+
 def _section_lines(group: ElementTree.Element) -> list[str]:
     paragraph = group.find("leg:P1/leg:P1para", namespaces=NAMESPACES)
-    if paragraph is None:
-        return []
-    return _paragraph_lines(paragraph)
+    if paragraph is not None:
+        return _paragraph_lines(paragraph)
+    return _paragraph_lines(group)
 
 
 def _section_heading(section: DocumentSection) -> str:
@@ -357,7 +415,7 @@ def _commentary_refs(element: ElementTree.Element | None) -> list[str]:
         return []
     return [
         ref
-        for commentary_ref in element.findall("leg:CommentaryRef", namespaces=NAMESPACES)
+        for commentary_ref in element.findall(".//leg:CommentaryRef", namespaces=NAMESPACES)
         if (ref := commentary_ref.attrib.get("Ref")) is not None
     ]
 
@@ -415,7 +473,7 @@ def _paragraph_lines(paragraph: ElementTree.Element) -> list[str]:
         tag = _local_name(child.tag)
         if tag == "Text":
             lines.append(_element_text(child))
-        elif tag in {"P2", "P3"}:
+        elif tag in {"P1", "P2", "P3"}:
             lines.extend(_numbered_paragraph_lines(child))
 
     return [line for line in lines if line]
