@@ -6,10 +6,13 @@ from object_store import LocalObjectStore
 from pdf_parsing import (
     LiteparseMarkdownCandidate,
     PdfParseCandidate,
+    cache_document_marker_markdown,
+    cache_document_pdf,
     liteparse_json_to_markdown,
     liteparse_markdown_object_key,
     liteparse_report_object_key,
     liteparse_text_object_key,
+    marker_markdown_object_key,
     normalize_liteparse_markdown_sample,
     parse_pdf_sample,
     pdf_object_key,
@@ -41,6 +44,10 @@ def test_pdf_and_liteparse_object_keys_are_deterministic(tmp_path: Path) -> None
     )
     assert liteparse_text_object_key(candidate, pdf_object).endswith(".txt")
     assert liteparse_report_object_key(candidate, pdf_object).endswith(".json")
+    assert marker_markdown_object_key(candidate, pdf_object).startswith(
+        "markdown/marker/point-in-time/2026-05-05/ukpga/1963/1/ukpga_19630001_en-"
+    )
+    assert marker_markdown_object_key(candidate, pdf_object).endswith(".md")
 
 
 def test_parse_pdf_sample_caches_pdf_and_records_liteparse_artifacts(tmp_path: Path) -> None:
@@ -100,6 +107,95 @@ def test_parse_pdf_sample_caches_pdf_and_records_liteparse_artifacts(tmp_path: P
     ]
     assert "extracted_text" in inserted_file_kinds
     assert "report" in inserted_file_kinds
+
+
+def test_cache_document_pdf_caches_target_document_without_liteparse(tmp_path: Path) -> None:
+    connection = RecordingConnection(
+        rows=[
+            (
+                1,
+                "ukpga/1963/1",
+                "point-in-time:2026-05-05:ukpga/1963/1",
+                PDF_URL,
+                None,
+                ["ukpga", "1963", "1"],
+                "point_in_time",
+                "2026-05-05",
+            )
+        ]
+    )
+    client = FakeClient()
+    object_store = LocalObjectStore(root=tmp_path / "objects")
+
+    pdf_object = cache_document_pdf(
+        connection,
+        client=client,
+        object_store=object_store,
+        source_path=("ukpga", "1963", "1"),
+        at="2026-05-05",
+    )
+
+    assert client.urls == [PDF_URL]
+    assert pdf_object.key.startswith("pdf/point-in-time/2026-05-05/ukpga/1963/1/ukpga_19630001_en-")
+    assert pdf_object.path.read_bytes() == b"%PDF-1.7"
+    assert any(
+        params[0] == pdf_object.key for sql, params in connection.executed if sql.startswith("update document_files")
+    )
+    select_sql, select_params = connection.executed[0]
+    assert "d.source_path = %s" in select_sql
+    assert "dv.snapshot_date = %s" in select_sql
+    assert select_params == (["ukpga", "1963", "1"], "2026-05-05")
+
+
+def test_cache_document_marker_markdown_records_noncanonical_markdown(tmp_path: Path) -> None:
+    connection = RecordingConnection(
+        rows=[
+            (
+                1,
+                "ukpga/1963/1",
+                "point-in-time:2026-05-05:ukpga/1963/1",
+                PDF_URL,
+                None,
+                ["ukpga", "1963", "1"],
+                "point_in_time",
+                "2026-05-05",
+            )
+        ]
+    )
+    client = FakeClient()
+    object_store = LocalObjectStore(root=tmp_path / "objects")
+    commands: list[list[str]] = []
+
+    def fake_runner(args: list[str]) -> CompletedProcess[str]:
+        commands.append(args)
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "source.md").write_text("# Marker extracted text\n\nBody text from PDF.")
+        return CompletedProcess(args=args, returncode=0)
+
+    markdown_object = cache_document_marker_markdown(
+        connection,
+        client=client,
+        object_store=object_store,
+        source_path=("ukpga", "1963", "1"),
+        at="2026-05-05",
+        marker_executable="marker_single",
+        command_runner=fake_runner,
+    )
+
+    assert client.urls == [PDF_URL]
+    assert len(commands) == 1
+    assert commands[0][0] == "marker_single"
+    assert commands[0][1].endswith(".pdf")
+    assert commands[0][commands[0].index("--output_format") + 1] == "markdown"
+    assert "--output_dir" in commands[0]
+    assert "--disable_image_extraction" in commands[0]
+    assert markdown_object.key.startswith("markdown/marker/point-in-time/2026-05-05/ukpga/1963/1/")
+    assert markdown_object.path.read_text() == "# Marker extracted text\n\nBody text from PDF."
+    inserted_file_kinds = [
+        params[2] for sql, params in connection.executed if "insert into document_files" in sql and len(params) >= 3
+    ]
+    assert "markdown" in inserted_file_kinds
 
 
 def test_liteparse_json_to_markdown_drops_likely_marginalia() -> None:

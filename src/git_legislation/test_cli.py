@@ -205,6 +205,113 @@ def test_ingest_point_in_time_year_command_publishes_each_document(monkeypatch, 
     assert "Published 2 Markdown documents to Postgres" in result.output
 
 
+def test_cache_pdf_command_caches_target_document_pdf(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+    pdf_object = SimpleNamespace(key="pdf/point-in-time/2026-05-05/aosp/1469/12/data.pdf")
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    def fake_cache_document_pdf(connection: object, **kwargs: object) -> object:
+        calls["cache_args"] = kwargs
+        calls["connection"] = connection
+        return pdf_object
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda database_url: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli.cache_document_pdf", fake_cache_document_pdf)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "cache-pdf",
+            "aosp/1469/12",
+            "--at",
+            "2026-05-05",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert isinstance(calls["connection"], FakeConnection)
+    assert calls["cache_args"]["source_path"] == ("aosp", "1469", "12")
+    assert calls["cache_args"]["at"] == "2026-05-05"
+    assert calls["committed"] is True
+    assert "Cached PDF pdf/point-in-time/2026-05-05/aosp/1469/12/data.pdf" in result.output
+
+
+def test_parse_pdf_marker_command_creates_target_document_markdown(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {}
+    markdown_object = SimpleNamespace(key="markdown/marker/point-in-time/2026-05-05/aosp/1469/12/data.md")
+
+    class FakeClient:
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    def fake_cache_document_marker_markdown(connection: object, **kwargs: object) -> object:
+        calls["connection"] = connection
+        calls["marker_args"] = kwargs
+        return markdown_object
+
+    monkeypatch.setattr("git_legislation.cli.create_client", lambda log: FakeClient())
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda database_url: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli.cache_document_marker_markdown", fake_cache_document_marker_markdown)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "parse-pdf-marker",
+            "aosp/1469/12",
+            "--at",
+            "2026-05-05",
+            "--marker-executable",
+            "marker_single",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(tmp_path / "objects"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert isinstance(calls["connection"], FakeConnection)
+    assert calls["marker_args"]["source_path"] == ("aosp", "1469", "12")
+    assert calls["marker_args"]["at"] == "2026-05-05"
+    assert calls["marker_args"]["marker_executable"] == "marker_single"
+    assert calls["committed"] is True
+    assert "Created Marker Markdown markdown/marker/point-in-time/2026-05-05/aosp/1469/12/data.md" in result.output
+
+
 def test_ingest_point_in_time_corpus_command_runs_supported_year_range(
     monkeypatch,
     tmp_path: Path,

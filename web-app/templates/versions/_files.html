@@ -1,0 +1,23 @@
+<h2>Files</h2>
+{% if error %}
+  <div class="notice error">Could not load files: {{ error }}</div>
+{% elif files %}
+  <ul class="compact-list">
+    {% for file in files %}
+      <li>
+        <strong>{{ file.file_kind }}</strong>
+        {% if file.is_canonical %}<span class="version-chip">canonical</span>{% endif %}
+        {% if file.object_key %}
+          <div class="metadata">{{ file.object_key }}</div>
+        {% elif file.source_url %}
+          <div class="metadata"><a href="{{ file.source_url }}">{{ file.source_url }}</a></div>
+        {% endif %}
+        {% if file.content_type or file.byte_size %}
+          <div class="metadata">{{ file.content_type or "unknown type" }}{% if file.byte_size %} · {{ file.byte_size }} bytes{% endif %}</div>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p>No files found for {{ version_id }}.</p>
+{% endif %}

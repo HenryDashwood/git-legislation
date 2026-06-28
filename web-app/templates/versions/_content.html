@@ -1,0 +1,8 @@
+<h2>Content</h2>
+{% if error %}
+  <div class="notice error">Could not load content: {{ error }}</div>
+{% elif content %}
+  <pre class="content-block">{{ content }}</pre>
+{% else %}
+  <p>No content found for {{ version_id }}.</p>
+{% endif %}

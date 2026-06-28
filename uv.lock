@@ -415,7 +415,9 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "jinja2" },
     { name = "liteparse" },
+    { name = "markdown" },
     { name = "marker-pdf" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
@@ -438,7 +440,9 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.138.1" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liteparse", specifier = ">=2.0.6" },
+    { name = "markdown", specifier = ">=3.10.2" },
     { name = "marker-pdf", git = "https://github.com/datalab-to/marker.git" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", specifier = ">=3.3.1" },
@@ -706,6 +710,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/d6/c2885b86de55a00c98dcdce07e83a1cd6795588b0adb5988be63faf2d7b4/liteparse-2.0.6-cp314-cp314-win_arm64.whl", hash = "sha256:8455bad260966ba85ce2eb5d4ca4a66a0d24e14253b5204185f9cc0603d949f4", size = 7397331, upload-time = "2026-06-05T21:17:24.716Z" },
     { url = "https://files.pythonhosted.org/packages/1f/29/e316fc6fd14ef455675ad01451ef1364d31201b37caeb28705e5d64a14f2/liteparse-2.0.6-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:ea91bcf7e82b85aec1e8731c5f41bb5ec2063b24d159e34956bc40c09367b870", size = 8868216, upload-time = "2026-06-05T21:17:26.082Z" },
     { url = "https://files.pythonhosted.org/packages/fc/d3/2a41330e824f9f5beaf4313d703afa2e518050dad4e58b067853c43224e3/liteparse-2.0.6-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:429facc55c38397bfdabcd2f96d3e13c843edfefcbffc760d97ded43882dc68e", size = 9181486, upload-time = "2026-06-05T21:17:27.775Z" },
+]
+
+[[package]]
+name = "markdown"
+version = "3.10.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/f4/69fa6ed85ae003c2378ffa8f6d2e3234662abd02c10d216c0ba96081a238/markdown-3.10.2.tar.gz", hash = "sha256:994d51325d25ad8aa7ce4ebaec003febcce822c3f8c911e3b17c52f7f589f950", size = 368805, upload-time = "2026-02-09T14:57:26.942Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/1f/77fa3081e4f66ca3576c896ae5d31c3002ac6607f9747d2e3aa49227e464/markdown-3.10.2-py3-none-any.whl", hash = "sha256:e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36", size = 108180, upload-time = "2026-02-09T14:57:25.787Z" },
 ]
 
 [[package]]

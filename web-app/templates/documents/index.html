@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Legislation browser{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h1>Legislation browser</h1>
+        <p class="lede">Search the local corpus by identity, status, extent, and source coverage.</p>
+      </div>
+      <div class="help-card">
+        <strong>What is a type?</strong>
+        <p>Legislation type codes come from legislation.gov.uk. For example, <code>ukpga</code> means UK Public General Acts and <code>uksi</code> means UK Statutory Instruments.</p>
+      </div>
+    </div>
+
+    <form
+      class="filters"
+      hx-get="/documents/results"
+      hx-target="#document-results"
+      hx-push-url="true"
+    >
+      <label>
+        Type
+        <select name="legislation_type">
+          <option value="">All types</option>
+          {% for item in legislation_types %}
+            <option value="{{ item.code }}" {% if filters.legislation_type == item.code %}selected{% endif %}>
+              {{ item.code }} — {{ item.label }}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="field-help">Choose a legislation.gov.uk category such as Acts, statutory instruments, or devolved legislation.</span>
+      </label>
+      <label>
+        Year
+        <input name="year" type="number" value="{{ filters.year }}" placeholder="2026">
+        <span class="field-help">Calendar year where known. Some older records use historical year strings internally.</span>
+      </label>
+      <label>
+        Number
+        <input name="number" value="{{ filters.number }}" placeholder="14">
+        <span class="field-help">The numbered item within a type/year, for example chapter 14.</span>
+      </label>
+      <label>
+        Status
+        <select name="status">
+          <option value="">Any status</option>
+          {% for status in status_options %}
+            <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+        <span class="field-help">Prospective, current, or unknown status as recorded in source metadata.</span>
+      </label>
+      <label>
+        Extent
+        <input name="extent" value="{{ filters.extent }}" placeholder="E+W+S+N.I.">
+        <span class="field-help">Jurisdiction extent codes: E, W, S, and N.I. mean England, Wales, Scotland, and Northern Ireland.</span>
+      </label>
+      <label>
+        Text coverage
+        <select name="metadata_only">
+          {% for option in metadata_options %}
+            <option value="{{ option.value }}" {% if filters.metadata_only == option.value %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <span class="field-help">Metadata/PDF-backed records may not have full parsed CLML text yet.</span>
+      </label>
+      <label>
+        Search
+        <input name="q" value="{{ filters.q }}" placeholder="exports">
+        <span class="field-help">Matches document titles for now; provision search is a later API step.</span>
+      </label>
+      <div class="filter-actions">
+        <button type="submit">Apply filters</button>
+        <a class="secondary-action" href="/documents">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section id="document-results">
+    {% include "documents/_results.html" %}
+  </section>
+{% endblock %}

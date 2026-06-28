@@ -124,7 +124,7 @@ CORS_ORIGINS=http://localhost:5173
 Useful v1 endpoints:
 
 - `GET /healthz`
-- `GET /documents?legislation_type=ukpga&year=2026&limit=50&offset=0`
+- `GET /documents?legislation_type=ukpga&year=2026&number=14&status=Prospective&metadata_only=false&limit=50&offset=0`
 - `GET /documents/ukpga/2026/14`
 - `GET /documents/ukpga/2026/14/versions`
 - `GET /documents/ukpga/2026/14/versions/latest`
@@ -133,6 +133,33 @@ Useful v1 endpoints:
 - `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/content`
 
 Metadata endpoints read from Postgres. Content endpoints resolve canonical Markdown or XML through database file records, then serve bytes from `var/object-store`.
+
+## Web App
+
+The HTMX web app lives in `web-app` and consumes the read API over HTTP. Run the API and web app as two local processes.
+
+Terminal 1:
+
+```bash
+set -a; . ./.env; set +a
+uv run git-legislation-api
+```
+
+Terminal 2:
+
+```bash
+API_BASE_URL=http://127.0.0.1:8000 uv run uvicorn main:app --app-dir web-app --reload --port 8001
+```
+
+Open `http://127.0.0.1:8001/documents` to browse documents, filter by legislation type, year, number, status, extent, text coverage, and title text. The document page renders parsed Markdown as readable HTML and, where available, shows the source PDF alongside it for comparison.
+
+To cache the PDF for a specific document into the local object store:
+
+```bash
+uv run git-legislation cache-pdf aosp/1469/12 --at 2026-05-05
+```
+
+Once cached, the web app serves the PDF through the read API instead of depending on the remote source during page view.
 
 ## Data Model
 

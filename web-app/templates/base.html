@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}git-legislation{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.7"></script>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a href="/documents" class="brand">git-legislation</a>
+      <span class="tagline">Browse reproducible UK legislation data</span>
+    </header>
+    <main class="page {% block page_class %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

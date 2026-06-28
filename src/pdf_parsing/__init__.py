@@ -164,6 +164,101 @@ def normalize_liteparse_markdown_sample(
     return report
 
 
+def cache_document_pdf(
+    connection: Any,
+    *,
+    client: FetchClient,
+    object_store: LocalObjectStore,
+    source_path: tuple[str, ...],
+    at: str | None,
+) -> StoredObject:
+    candidate = select_document_pdf_candidate(connection, source_path=source_path, at=at)
+    return ensure_pdf_cached(connection, candidate, client=client, object_store=object_store)
+
+
+def cache_document_marker_markdown(
+    connection: Any,
+    *,
+    client: FetchClient,
+    object_store: LocalObjectStore,
+    source_path: tuple[str, ...],
+    at: str | None,
+    marker_executable: str = "marker_single",
+    command_runner: CommandRunner | None = None,
+) -> StoredObject:
+    candidate = select_document_pdf_candidate(connection, source_path=source_path, at=at)
+    pdf_object = ensure_pdf_cached(connection, candidate, client=client, object_store=object_store)
+    markdown = run_marker(
+        pdf_object.path,
+        marker_executable=marker_executable,
+        command_runner=command_runner,
+    )
+    markdown_object = object_store.put_text(
+        markdown,
+        key=marker_markdown_object_key(candidate, pdf_object),
+        content_type="text/markdown",
+    )
+    upsert_storage_object(connection, markdown_object, source_url=candidate.source_url)
+    insert_document_file(
+        connection,
+        document_id=candidate.document_id,
+        version_id=candidate.version_id,
+        file_kind="markdown",
+        object_key=markdown_object.key,
+        sha256=markdown_object.sha256,
+        source_url=candidate.source_url,
+        is_canonical=False,
+    )
+    return markdown_object
+
+
+def select_document_pdf_candidate(
+    connection: Any,
+    *,
+    source_path: tuple[str, ...],
+    at: str | None,
+) -> PdfParseCandidate:
+    clauses = ["df.file_kind = 'pdf'", "df.source_url is not null", "df.version_id is not null", "d.source_path = %s"]
+    params: list[Any] = [list(source_path)]
+    if at is not None:
+        clauses.append("dv.snapshot_date = %s")
+        params.append(at)
+    rows = connection.execute(
+        f"""
+        select
+            df.id,
+            df.document_id,
+            df.version_id,
+            df.source_url,
+            df.object_key,
+            d.source_path,
+            dv.version_kind,
+            dv.snapshot_date::text
+        from document_files df
+        join documents d on d.id = df.document_id
+        join document_versions dv on dv.id = df.version_id
+        where {" and ".join(clauses)}
+        order by df.is_canonical desc, df.id
+        limit 1
+        """,
+        tuple(params),
+    ).fetchall()
+    if not rows:
+        snapshot_hint = f" at {at}" if at is not None else ""
+        raise ValueError(f"No PDF file row found for {'/'.join(source_path)}{snapshot_hint}.")
+    row = rows[0]
+    return PdfParseCandidate(
+        document_file_id=int(row[0]),
+        document_id=str(row[1]),
+        version_id=str(row[2]),
+        source_url=str(row[3]),
+        object_key=str(row[4]) if row[4] is not None else None,
+        source_path=tuple(str(part) for part in row[5]),
+        version_kind=str(row[6]),
+        snapshot_date=str(row[7]) if row[7] is not None else None,
+    )
+
+
 def select_pdf_parse_candidates(
     connection: Any,
     *,
@@ -597,6 +692,32 @@ def run_liteparse(
         return text_path.read_text(), report_path.read_text()
 
 
+def run_marker(
+    pdf_path: Path,
+    *,
+    marker_executable: str,
+    command_runner: CommandRunner | None = None,
+) -> str:
+    runner = command_runner or _run_command
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_dir = Path(temp_dir)
+        runner(
+            [
+                marker_executable,
+                str(pdf_path),
+                "--output_format",
+                "markdown",
+                "--output_dir",
+                str(output_dir),
+                "--disable_image_extraction",
+            ]
+        )
+        markdown_paths = sorted(output_dir.rglob("*.md"))
+        if not markdown_paths:
+            raise RuntimeError("Marker did not produce a Markdown file.")
+        return markdown_paths[0].read_text()
+
+
 def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(args, check=True, capture_output=True, text=True)
@@ -642,6 +763,16 @@ def liteparse_markdown_object_key(candidate: LiteparseMarkdownCandidate) -> str:
         / _collection_path(candidate)
         / Path(*candidate.source_path[:-1])
         / f"{candidate.source_path[-1]}.md"
+    ).as_posix()
+
+
+def marker_markdown_object_key(candidate: PdfParseCandidate, pdf_object: StoredObject) -> str:
+    return (
+        Path("markdown")
+        / "marker"
+        / _collection_path(candidate)
+        / Path(*candidate.source_path)
+        / _output_stem(pdf_object, ".md")
     ).as_posix()
 
 
@@ -905,7 +1036,7 @@ def _cleanup_ocr_line(line: str) -> str:
 
 def _normalize_markdown_line(line: str) -> str:
     normalized = re.sub(r"\s+", " ", line).strip()
-    normalized = normalized.replace(" w\"in ", " within ")
+    normalized = normalized.replace(' w"in ', " within ")
     normalized = normalized.replace(" w* ", " with ")
     normalized = normalized.replace(" wth ", " with ")
     return normalized

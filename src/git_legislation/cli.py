@@ -21,6 +21,8 @@ from fetchers.legislationdotgovdotuk import (
 )
 from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
 from pdf_parsing import (
+    cache_document_marker_markdown,
+    cache_document_pdf,
     normalize_liteparse_markdown_sample,
     parse_pdf_sample,
     render_liteparse_markdown_report,
@@ -264,6 +266,81 @@ def corpus_counts(
             object_bytes=_object_bytes(bucket_root),
         )
     typer.echo(render_corpus_counts(counts))
+
+
+@app.command("cache-pdf")
+def cache_pdf_command(
+    source_path: Annotated[str, typer.Argument(help="Legislation source path, e.g. aosp/1469/12.")],
+    at: Annotated[str | None, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    document = document_ref_from_source_path(source_path)
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        pdf_object = cache_document_pdf(
+            connection,
+            client=client,
+            object_store=object_store,
+            source_path=document.path,
+            at=at,
+        )
+        connection.commit()
+    typer.echo(f"Cached PDF {pdf_object.key}")
+
+
+@app.command("parse-pdf-marker")
+def parse_pdf_marker_command(
+    source_path: Annotated[str, typer.Argument(help="Legislation source path, e.g. aosp/1469/12.")],
+    at: Annotated[str | None, typer.Option("--at", help="Point-in-time snapshot date as YYYY-MM-DD.")] = None,
+    marker_executable: Annotated[
+        str,
+        typer.Option("--marker-executable", help="Marker CLI executable."),
+    ] = "marker_single",
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    document = document_ref_from_source_path(source_path)
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        markdown_object = cache_document_marker_markdown(
+            connection,
+            client=client,
+            object_store=object_store,
+            source_path=document.path,
+            at=at,
+            marker_executable=marker_executable,
+        )
+        connection.commit()
+    typer.echo(f"Created Marker Markdown {markdown_object.key}")
 
 
 @app.command("parse-pdf-sample")

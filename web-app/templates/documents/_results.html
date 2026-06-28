@@ -1,0 +1,26 @@
+{% if error %}
+  <div class="notice error">
+    Could not load documents: {{ error }}
+  </div>
+{% elif documents %}
+  <div class="results-meta">Showing {{ documents|length }} document{{ "" if documents|length == 1 else "s" }}.</div>
+  <ol class="document-list">
+    {% for document in documents %}
+      <li class="document-card">
+        <a class="document-title" href="/documents/{{ document.id }}">{{ document.title }}</a>
+        <div class="metadata">
+          <span>{{ document.id }}</span>
+          <span>{{ document.legislation_type }}</span>
+          <span>{{ document.year }}</span>
+          {% if document.extent %}<span>{{ document.extent }}</span>{% endif %}
+          {% if document.status %}<span>{{ document.status }}</span>{% endif %}
+        </div>
+        {% if document.latest_version_id %}
+          <div class="version-chip">Latest: {{ document.latest_version_id }}</div>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ol>
+{% else %}
+  <div class="notice">No documents matched those filters.</div>
+{% endif %}

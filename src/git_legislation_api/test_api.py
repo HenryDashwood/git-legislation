@@ -23,6 +23,10 @@ class FakeRepository:
         *,
         legislation_type: str | None,
         year: int | None,
+        number: str | None,
+        status: str | None,
+        extent: str | None,
+        metadata_only: bool | None,
         q: str | None,
         limit: int,
         offset: int,
@@ -30,6 +34,10 @@ class FakeRepository:
         self.calls["list_documents"] = {
             "legislation_type": legislation_type,
             "year": year,
+            "number": number,
+            "status": status,
+            "extent": extent,
+            "metadata_only": metadata_only,
             "q": q,
             "limit": limit,
             "offset": offset,
@@ -139,6 +147,26 @@ class FakeRepository:
             }
         ]
 
+    def get_file(self, file_id: int) -> dict[str, Any] | None:
+        self.calls["get_file"] = file_id
+        if file_id != 2:
+            return None
+        return {
+            "id": 2,
+            "document_id": "ukpga/2026/14",
+            "version_id": "point-in-time:2026-05-05:ukpga/2026/14",
+            "file_kind": "pdf",
+            "source_url": "https://www.legislation.gov.uk/ukpga/2026/14/data.pdf",
+            "object_key": "pdf/point-in-time/2026-05-05/ukpga/2026/14/data.pdf",
+            "sha256": "abc123",
+            "is_canonical": False,
+            "bucket": "legislation",
+            "byte_size": 18,
+            "content_type": "application/pdf",
+            "object_sha256": "abc123",
+            "created_at": "2026-05-05T12:00:00Z",
+        }
+
     def get_canonical_file(self, version_id: str, file_kind: str) -> dict[str, Any] | None:
         self.calls["get_canonical_file"] = (version_id, file_kind)
         return self.list_files(version_id)[0] if file_kind == "markdown" else None
@@ -167,12 +195,19 @@ def test_list_documents_passes_filters_and_returns_items(tmp_path: Path) -> None
     repository = FakeRepository()
     client = TestClient(create_app(repository=repository, storage=FakeStorage(tmp_path / "missing.md")))
 
-    response = client.get("/documents?legislation_type=ukpga&year=2026&q=exports&limit=25&offset=50")
+    response = client.get(
+        "/documents?legislation_type=ukpga&year=2026&number=14&status=Prospective"
+        "&extent=E%2BW%2BS%2BN.I.&metadata_only=false&q=exports&limit=25&offset=50"
+    )
 
     assert response.status_code == 200
     assert repository.calls["list_documents"] == {
         "legislation_type": "ukpga",
         "year": 2026,
+        "number": "14",
+        "status": "Prospective",
+        "extent": "E+W+S+N.I.",
+        "metadata_only": False,
         "q": "exports",
         "limit": 25,
         "offset": 50,
@@ -271,5 +306,28 @@ def test_version_content_serves_canonical_markdown(tmp_path: Path) -> None:
             "object_key": "markdown/point-in-time/2026-05-05/ukpga/2026/14.md",
             "sha256": "abc123",
             "content_type": "text/markdown",
+        }
+    ]
+
+
+def test_file_content_serves_stored_pdf(tmp_path: Path) -> None:
+    content_path = tmp_path / "objects" / "legislation" / "pdf" / "example.pdf"
+    content_path.parent.mkdir(parents=True)
+    content_path.write_bytes(b"%PDF")
+    repository = FakeRepository()
+    storage = FakeStorage(content_path)
+    client = TestClient(create_app(repository=repository, storage=storage))
+
+    response = client.get("/files/2/content")
+
+    assert response.status_code == 200
+    assert response.content == b"%PDF"
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert repository.calls["get_file"] == 2
+    assert storage.calls == [
+        {
+            "object_key": "pdf/point-in-time/2026-05-05/ukpga/2026/14/data.pdf",
+            "sha256": "abc123",
+            "content_type": "application/pdf",
         }
     ]

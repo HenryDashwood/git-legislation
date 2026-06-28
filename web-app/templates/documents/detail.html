@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}{% if document %}{{ document.title }}{% else %}Document{% endif %}{% endblock %}
+{% block page_class %}reader-page{% endblock %}
+
+{% block content %}
+  <p class="back-link"><a href="/documents">&larr; Back to documents</a></p>
+
+  {% if error %}
+    <div class="notice error">Could not load document: {{ error }}</div>
+  {% elif document %}
+    <article class="document-hero compact">
+      <div class="document-title-block">
+        <h1>{{ document.title }}</h1>
+        <p class="lede">Parsed text with source material available for comparison.</p>
+        {% if document.document_uri %}
+          <p><a class="source-link" href="{{ document.document_uri }}">View on legislation.gov.uk</a></p>
+        {% endif %}
+      </div>
+      <dl class="metadata-grid">
+        <div>
+          <dt>ID</dt>
+          <dd>{{ document.id }}</dd>
+        </div>
+        <div>
+          <dt>Type</dt>
+          <dd>{{ document.legislation_type }}</dd>
+        </div>
+        <div>
+          <dt>Year / number</dt>
+          <dd>{{ document.year }} / {{ document.number }}</dd>
+        </div>
+        {% if document.status %}
+          <div>
+            <dt>Status</dt>
+            <dd>{{ document.status }}</dd>
+          </div>
+        {% endif %}
+        {% if document.extent %}
+          <div>
+            <dt>Extent</dt>
+            <dd>{{ document.extent }}</dd>
+          </div>
+        {% endif %}
+      </dl>
+      <p class="field-help">Extent codes: E = England, W = Wales, S = Scotland, N.I. = Northern Ireland.</p>
+    </article>
+
+    {% if document.latest_version %}
+      {% set latest = document.latest_version %}
+      <section class="reader-shell">
+        <input class="source-toggle-checkbox" id="source-toggle" type="checkbox" checked>
+        <div class="reader-toolbar">
+          <div class="reader-toolbar-title">
+            <h2>Parsed law</h2>
+            <p class="metadata">
+              {{ content_label }} · {{ latest.id }} · {{ latest.version_kind }}{% if latest.snapshot_date %} · {{ latest.snapshot_date }}{% endif %}
+            </p>
+          </div>
+          {% if pdf_file and pdf_file.source_url %}
+            <div class="reader-toolbar-title source-title">
+              <h2>Check against source PDF</h2>
+              <p class="metadata">Proxied here for side-by-side comparison.</p>
+            </div>
+          {% endif %}
+          <div class="actions">
+            {% if pdf_file and pdf_file.source_url %}
+              <label class="toggle-source" for="source-toggle">
+                <span class="when-source-visible">Hide PDF</span>
+                <span class="when-source-hidden">Show PDF</span>
+              </label>
+              <a class="toolbar-link" href="{{ pdf_file.source_url }}">Open PDF in a new tab</a>
+            {% endif %}
+            <button hx-get="/versions/{{ latest.id }}/provisions" hx-target="#version-panel">Provisions</button>
+            <button hx-get="/versions/{{ latest.id }}/files" hx-target="#version-panel">Files</button>
+            <button hx-get="/versions/{{ latest.id }}/content" hx-target="#version-panel">Raw Markdown</button>
+          </div>
+        </div>
+
+        <div class="reader-grid">
+          <section class="law-content" aria-label="Parsed legislation content">
+            {% if rendered_content %}
+              {{ rendered_content }}
+            {% else %}
+              <div class="notice">No parsed Markdown content is available for this version.</div>
+            {% endif %}
+          </section>
+
+          <aside class="source-panel" aria-label="Source material">
+            {% if pdf_file and pdf_file.source_url %}
+              <iframe title="Source PDF preview" src="/versions/{{ latest.id }}/pdf"></iframe>
+            {% else %}
+              <div class="notice">
+                No PDF alternative is recorded for this version. Use the source URI or file list instead.
+              </div>
+              <div class="source-panel-footer">
+                <a href="{{ document.document_uri }}">Open source URI</a>
+              </div>
+            {% endif %}
+          </aside>
+        </div>
+      </section>
+    {% endif %}
+
+    <section class="panel">
+      <h2>Versions</h2>
+      {% if versions %}
+        <ul class="compact-list">
+          {% for version in versions %}
+            <li>{{ version.id }}{% if version.snapshot_date %} ({{ version.snapshot_date }}){% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>No versions found.</p>
+      {% endif %}
+    </section>
+
+    <section id="version-panel" class="panel">
+      <p>Select provisions, files, or content for the latest version.</p>
+    </section>
+  {% endif %}
+{% endblock %}

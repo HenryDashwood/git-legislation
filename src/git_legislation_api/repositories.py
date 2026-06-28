@@ -20,6 +20,10 @@ class PostgresRepository:
         *,
         legislation_type: str | None,
         year: int | None,
+        number: str | None,
+        status: str | None,
+        extent: str | None,
+        metadata_only: bool | None,
         q: str | None,
         limit: int,
         offset: int,
@@ -30,29 +34,42 @@ class PostgresRepository:
             clauses.append(sql.SQL("legislation_type = %s"))
             params.append(legislation_type)
         if year is not None:
-            clauses.append(sql.SQL("calendar_year = %s"))
+            clauses.append(sql.SQL("d.calendar_year = %s"))
             params.append(year)
+        if number is not None:
+            clauses.append(sql.SQL("d.number = %s"))
+            params.append(number)
+        if status is not None:
+            clauses.append(sql.SQL("d.status = %s"))
+            params.append(status)
+        if extent is not None:
+            clauses.append(sql.SQL("d.extent = %s"))
+            params.append(extent)
+        if metadata_only is not None:
+            clauses.append(sql.SQL("latest_dv.is_metadata_only = %s"))
+            params.append(metadata_only)
         if q is not None:
-            clauses.append(sql.SQL("title ilike %s"))
+            clauses.append(sql.SQL("d.title ilike %s"))
             params.append(f"%{q}%")
         params.extend([limit, offset])
         query = sql.SQL("""
             select
-                id,
-                legislation_type,
-                year,
-                calendar_year,
-                number,
-                title,
-                document_uri,
-                status,
-                extent,
-                latest_version_id,
-                created_at,
-                updated_at
-            from documents
+                d.id,
+                d.legislation_type,
+                d.year,
+                d.calendar_year,
+                d.number,
+                d.title,
+                d.document_uri,
+                d.status,
+                d.extent,
+                d.latest_version_id,
+                d.created_at,
+                d.updated_at
+            from documents d
+            left join document_versions latest_dv on latest_dv.id = d.latest_version_id
             where {}
-            order by calendar_year nulls last, legislation_type, number, id
+            order by d.calendar_year nulls last, d.legislation_type, d.number, d.id
             limit %s offset %s
         """).format(sql.SQL(" and ").join(clauses))
         with self.connection_factory() as connection:
@@ -171,6 +188,10 @@ class PostgresRepository:
                 _files_sql(sql.SQL("df.version_id = %s and df.file_kind = %s and df.is_canonical = true")),
                 [version_id, file_kind],
             )
+
+    def get_file(self, file_id: int) -> dict[str, Any] | None:
+        with self.connection_factory() as connection:
+            return _fetch_one(connection, _files_sql(sql.SQL("df.id = %s")), [file_id])
 
     def _get_version_with_connection(
         self,

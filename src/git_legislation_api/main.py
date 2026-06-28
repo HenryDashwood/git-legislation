@@ -83,6 +83,10 @@ def create_app(
         request: Request,
         legislation_type: LegislationTypeCode | None = None,
         year: int | None = None,
+        number: str | None = None,
+        status: str | None = None,
+        extent: str | None = None,
+        metadata_only: bool | None = None,
         q: str | None = None,
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
@@ -90,6 +94,10 @@ def create_app(
         items = request.app.state.repository.list_documents(
             legislation_type=str(legislation_type) if legislation_type is not None else None,
             year=year,
+            number=number,
+            status=status,
+            extent=extent,
+            metadata_only=metadata_only,
             q=q,
             limit=limit,
             offset=offset,
@@ -138,6 +146,29 @@ def create_app(
         file_record = request.app.state.repository.get_canonical_file(_clean_path_id(version_id), kind)
         if file_record is None or file_record.get("object_key") is None:
             raise HTTPException(status_code=404, detail="Canonical content not found")
+        sha256 = str(file_record.get("object_sha256") or file_record.get("sha256") or "")
+        content_type = str(file_record.get("content_type") or "application/octet-stream")
+        try:
+            content = request.app.state.storage.resolve(
+                object_key=str(file_record["object_key"]),
+                sha256=sha256,
+                content_type=content_type,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Content object not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return FileResponse(
+            content.path,
+            media_type=content.content_type,
+            headers={"ETag": f'"{content.sha256}"'},
+        )
+
+    @app.get("/files/{file_id}/content")
+    def get_file_content(request: Request, file_id: int) -> FileResponse:
+        file_record = request.app.state.repository.get_file(file_id)
+        if file_record is None or file_record.get("object_key") is None:
+            raise HTTPException(status_code=404, detail="File content not found")
         sha256 = str(file_record.get("object_sha256") or file_record.get("sha256") or "")
         content_type = str(file_record.get("content_type") or "application/octet-stream")
         try:
