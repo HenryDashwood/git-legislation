@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Search results — git-legislation{% endblock %}
+
+{% block content %}
+  <p class="back-link"><a href="/documents">&lsaquo; Search home</a></p>
+  <h1 class="page-title">Search results</h1>
+
+  <div class="finder">
+    <form class="filters" action="/documents" method="get">
+      <h2 class="filters-heading">Filter</h2>
+      <label>
+        <span class="label-text">Title contains</span>
+        <input name="q" value="{{ filters.q }}">
+      </label>
+      <label>
+        <span class="label-text">Type</span>
+        <select name="legislation_type">
+          <option value="">All types</option>
+          {% for item in legislation_types %}
+            <option value="{{ item.code }}" {% if filters.legislation_type == item.code %}selected{% endif %}>
+              {{ item.label }} ({{ item.code }})
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="label-text">Year</span>
+        <input name="year" type="number" value="{{ filters.year }}">
+      </label>
+      <label>
+        <span class="label-text">Number</span>
+        <input name="number" value="{{ filters.number }}">
+        <span class="field-help">The numbered item within a type and year, for example chapter 14.</span>
+      </label>
+      <label>
+        <span class="label-text">Status</span>
+        <select name="status">
+          <option value="">Any status</option>
+          {% for status in status_options %}
+            <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <span class="label-text">Extent</span>
+        <input name="extent" value="{{ filters.extent }}">
+        <span class="field-help">Jurisdiction codes joined with +: E, W, S and N.I.</span>
+      </label>
+      <label>
+        <span class="label-text">Text coverage</span>
+        <select name="metadata_only">
+          {% for option in metadata_options %}
+            <option value="{{ option.value }}" {% if filters.metadata_only == option.value %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <span class="field-help">Metadata or PDF&#8209;backed records may not have parsed text yet.</span>
+      </label>
+      <div class="filter-actions">
+        <button type="submit" class="button">Apply filters</button>
+        <a class="secondary-action" href="/documents">Clear</a>
+      </div>
+    </form>
+
+    <section id="document-results" class="results-column">
+      {% include "documents/_results.html" %}
+    </section>
+  </div>
+{% endblock %}

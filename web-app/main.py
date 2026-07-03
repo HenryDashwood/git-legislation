@@ -1,22 +1,93 @@
 """HTMX web frontend for browsing the legislation corpus."""
 
+import threading
+from collections import OrderedDict
+from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import markdown
 import uvicorn
 from api_client import ReadApiClient
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 from settings import WebSettings, load_settings
 
+from fetchers.legislationdotgovdotuk import SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES
 from git_legislation_api.types import LEGISLATION_TYPE_LABELS, LegislationTypeCode
 
 APP_ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=APP_ROOT / "templates")
+
+# Ordered chronologically for the corpus timeline; slugs pick jurisdiction colours.
+LEGISLATION_TYPE_GROUPS: list[tuple[str, str, list[LegislationTypeCode]]] = [
+    (
+        "Historical parliaments",
+        "historic",
+        [
+            LegislationTypeCode.AEP,
+            LegislationTypeCode.AOSP,
+            LegislationTypeCode.AIP,
+            LegislationTypeCode.APGB,
+            LegislationTypeCode.GBPPA,
+            LegislationTypeCode.GBLA,
+        ],
+    ),
+    (
+        "UK Parliament",
+        "uk",
+        [
+            LegislationTypeCode.UKPGA,
+            LegislationTypeCode.UKLA,
+            LegislationTypeCode.UKPPA,
+            LegislationTypeCode.UKSI,
+            LegislationTypeCode.UKMO,
+            LegislationTypeCode.UKCM,
+            LegislationTypeCode.UKCI,
+        ],
+    ),
+    (
+        "Scotland",
+        "scotland",
+        [LegislationTypeCode.ASP, LegislationTypeCode.SSI],
+    ),
+    (
+        "Wales",
+        "wales",
+        [
+            LegislationTypeCode.ASC,
+            LegislationTypeCode.ANAW,
+            LegislationTypeCode.MWA,
+            LegislationTypeCode.WSI,
+        ],
+    ),
+    (
+        "Northern Ireland",
+        "ni",
+        [
+            LegislationTypeCode.NIA,
+            LegislationTypeCode.NISR,
+            LegislationTypeCode.NISI,
+            LegislationTypeCode.APNI,
+            LegislationTypeCode.MNIA,
+            LegislationTypeCode.NISRO,
+        ],
+    ),
+]
+
+TYPE_LABELS_BY_CODE = {code.value: label for code, label in LEGISLATION_TYPE_LABELS.items()}
+
+PDF_CACHE_MAX_ENTRIES = 8
+PDF_CACHE_MAX_ITEM_BYTES = 32 * 1024 * 1024
+
+# Acts are cited by chapter ("c. 14"); instruments, rules, and measures by number ("No. 14").
+CHAPTER_CITED_TYPES = {
+    code.value for code, label in LEGISLATION_TYPE_LABELS.items() if "Act" in label or "Personal" in label
+}
 
 
 def create_app(api_client: Any | None = None, settings: WebSettings | None = None) -> FastAPI:
@@ -24,6 +95,17 @@ def create_app(api_client: Any | None = None, settings: WebSettings | None = Non
     app = FastAPI(title="git-legislation web", version="0.1.0")
     app.mount("/static", StaticFiles(directory=APP_ROOT / "static"), name="static")
     app.state.api_client = api_client or ReadApiClient(web_settings.api_base_url)
+    app.state.pdf_cache = OrderedDict()
+    app.state.pdf_cache_lock = threading.Lock()
+
+    @app.middleware("http")
+    async def drop_empty_query_params(request: Request, call_next: Any) -> Any:
+        # HTML forms submit every field, so a blank year arrives as "year=" and
+        # fails int/enum validation. Treat empty values as not provided.
+        if request.url.query:
+            filtered = [(key, value) for key, value in request.query_params.multi_items() if value != ""]
+            request.scope["query_string"] = urlencode(filtered).encode()
+        return await call_next(request)
 
     @app.get("/")
     def index() -> RedirectResponse:
@@ -39,7 +121,28 @@ def create_app(api_client: Any | None = None, settings: WebSettings | None = Non
         extent: str | None = None,
         metadata_only: bool | None = None,
         q: str | None = None,
+        limit: int = Query(50, ge=1, le=500),
+        offset: int = Query(0, ge=0),
     ) -> Any:
+        searched = any(
+            value is not None and value != ""
+            for value in (legislation_type, year, number, status, extent, metadata_only, q)
+        )
+        if not searched:
+            try:
+                summary_items = request.app.state.api_client.get_corpus_summary().get("items", [])
+            except Exception:
+                summary_items = None
+            return templates.TemplateResponse(
+                request,
+                "documents/index.html",
+                {
+                    "timeline": _timeline(summary_items),
+                    "legislation_types": [
+                        {"code": code.value, "label": LEGISLATION_TYPE_LABELS[code]} for code in LegislationTypeCode
+                    ],
+                },
+            )
         result = _list_documents(
             request,
             legislation_type=legislation_type,
@@ -49,10 +152,12 @@ def create_app(api_client: Any | None = None, settings: WebSettings | None = Non
             extent=extent,
             metadata_only=metadata_only,
             q=q,
+            limit=limit,
+            offset=offset,
         )
         return templates.TemplateResponse(
             request,
-            "documents/index.html",
+            "documents/search.html",
             {
                 **result,
                 **_filter_context(
@@ -123,6 +228,8 @@ def create_app(api_client: Any | None = None, settings: WebSettings | None = Non
             "documents/detail.html",
             {
                 "document": document,
+                "type_label": TYPE_LABELS_BY_CODE.get(document.get("legislation_type", "")) if document else None,
+                "chapter_cited": document.get("legislation_type") in CHAPTER_CITED_TYPES if document else False,
                 "versions": versions,
                 "files": files,
                 "rendered_content": rendered_content,
@@ -175,17 +282,35 @@ def create_app(api_client: Any | None = None, settings: WebSettings | None = Non
         )
 
     @app.get("/versions/{version_id:path}/pdf")
-    def version_pdf(request: Request, version_id: str) -> StreamingResponse:
-        content_path = request.app.state.api_client.get_pdf_content_path(version_id)
-        if content_path is not None:
-            source_url = content_path
-        else:
-            try:
-                source_url = request.app.state.api_client.get_pdf_source_url(version_id)
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=404, detail="PDF source not found") from exc
-        return StreamingResponse(
-            request.app.state.api_client.iter_pdf_source(source_url),
+    def version_pdf(request: Request, version_id: str) -> Response:
+        # The browser's PDF viewer requests this URL twice (a sniff, then the
+        # real load), and legislation.gov.uk generates PDFs on demand, slowly.
+        # Buffer the whole file and keep recent ones so only the first request
+        # for a document pays the upstream cost.
+        cache: OrderedDict[str, bytes] = request.app.state.pdf_cache
+        lock: threading.Lock = request.app.state.pdf_cache_lock
+        with lock:
+            content = cache.get(version_id)
+            if content is not None:
+                cache.move_to_end(version_id)
+        if content is None:
+            content_path = request.app.state.api_client.get_pdf_content_path(version_id)
+            if content_path is not None:
+                source_url = content_path
+            else:
+                try:
+                    source_url = request.app.state.api_client.get_pdf_source_url(version_id)
+                except FileNotFoundError as exc:
+                    raise HTTPException(status_code=404, detail="PDF source not found") from exc
+            content = b"".join(request.app.state.api_client.iter_pdf_source(source_url))
+            if len(content) <= PDF_CACHE_MAX_ITEM_BYTES:
+                with lock:
+                    cache[version_id] = content
+                    cache.move_to_end(version_id)
+                    while len(cache) > PDF_CACHE_MAX_ENTRIES:
+                        cache.popitem(last=False)
+        return Response(
+            content=content,
             media_type="application/pdf",
             headers={"Content-Disposition": 'inline; filename="source.pdf"'},
         )
@@ -206,6 +331,12 @@ def _list_documents(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    base_context = {
+        "type_labels": TYPE_LABELS_BY_CODE,
+        "chapter_cited_types": CHAPTER_CITED_TYPES,
+        "prev_url": None,
+        "next_url": None,
+    }
     try:
         response = request.app.state.api_client.list_documents(
             legislation_type=legislation_type.value if legislation_type is not None else None,
@@ -218,14 +349,120 @@ def _list_documents(
             limit=limit,
             offset=offset,
         )
+        documents = response.get("items", [])
         return {
-            "documents": response.get("items", []),
+            **base_context,
+            "documents": documents,
             "limit": response.get("limit", limit),
             "offset": response.get("offset", offset),
             "error": None,
+            "prev_url": _page_url(
+                legislation_type=legislation_type,
+                year=year,
+                number=number,
+                status=status,
+                extent=extent,
+                metadata_only=metadata_only,
+                q=q,
+                limit=limit,
+                offset=max(offset - limit, 0),
+            )
+            if offset > 0
+            else None,
+            "next_url": _page_url(
+                legislation_type=legislation_type,
+                year=year,
+                number=number,
+                status=status,
+                extent=extent,
+                metadata_only=metadata_only,
+                q=q,
+                limit=limit,
+                offset=offset + limit,
+            )
+            if len(documents) == limit
+            else None,
         }
     except Exception as exc:
-        return {"documents": [], "limit": limit, "offset": offset, "error": str(exc)}
+        return {**base_context, "documents": [], "limit": limit, "offset": offset, "error": str(exc)}
+
+
+def _page_url(
+    *,
+    legislation_type: LegislationTypeCode | None,
+    year: int | None,
+    number: str | None,
+    status: str | None,
+    extent: str | None,
+    metadata_only: bool | None,
+    q: str | None,
+    limit: int,
+    offset: int,
+) -> str:
+    params: dict[str, str | int] = {}
+    if legislation_type is not None:
+        params["legislation_type"] = legislation_type.value
+    if year is not None:
+        params["year"] = year
+    for key, value in (("number", number), ("status", status), ("extent", extent), ("q", q)):
+        if value:
+            params[key] = value
+    if metadata_only is not None:
+        params["metadata_only"] = "true" if metadata_only else "false"
+    if limit != 50:
+        params["limit"] = limit
+    if offset > 0:
+        params["offset"] = offset
+    return f"/documents?{urlencode(params)}"
+
+
+def _timeline(summary_items: list[dict[str, Any]] | None) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for item in summary_items or []:
+        code = item.get("legislation_type")
+        count = item.get("document_count")
+        if isinstance(code, str) and isinstance(count, int):
+            counts[code] = count
+
+    spans = SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES
+    start_year = min(span.start_year for span in spans.values())
+    end_year = date.today().year
+    total_years = end_year - start_year
+
+    total_documents = 0
+    groups: list[dict[str, Any]] = []
+    for title, slug, codes in LEGISLATION_TYPE_GROUPS:
+        rows: list[dict[str, Any]] = []
+        for code in sorted(codes, key=lambda item: spans[item.value].start_year):
+            span = spans[code.value]
+            first = span.start_year
+            last = span.end_year or end_year
+            count = counts.get(code.value)
+            total_documents += count or 0
+            rows.append(
+                {
+                    "code": code.value,
+                    "label": LEGISLATION_TYPE_LABELS[code],
+                    "first_year": first,
+                    "last_label": str(span.end_year) if span.end_year is not None else "present",
+                    "count_label": f"{count:,}" if count else None,
+                    "left_pct": round((first - start_year) / total_years * 100, 2),
+                    "width_pct": round(max((last - first) / total_years * 100, 0.6), 2),
+                }
+            )
+        groups.append({"title": title, "slug": slug, "rows": rows})
+
+    ticks = [
+        {"year": tick_year, "left_pct": round((tick_year - start_year) / total_years * 100, 2)}
+        for tick_year in range(1300, end_year, 100)
+    ]
+    return {
+        "groups": groups,
+        "ticks": ticks,
+        "start_year": start_year,
+        "end_year": end_year,
+        "total_label": f"{total_documents:,}" if total_documents else None,
+    }
 
 
 def _filter_context(

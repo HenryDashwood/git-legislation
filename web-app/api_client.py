@@ -39,6 +39,9 @@ class ReadApiClient:
         )
         return self._get_json("/documents", params=params)
 
+    def get_corpus_summary(self) -> dict[str, Any]:
+        return self._get_json("/corpus/summary")
+
     def get_document(self, document_path: str) -> dict[str, Any]:
         return self._get_json(f"/documents/{document_path}")
 

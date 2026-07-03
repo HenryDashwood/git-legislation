@@ -58,6 +58,15 @@ class FakeApiClient:
             "offset": offset,
         }
 
+    def get_corpus_summary(self) -> dict[str, Any]:
+        self.calls.append(("get_corpus_summary", {}))
+        return {
+            "items": [
+                {"legislation_type": "ukpga", "document_count": 3600, "first_year": 1801, "last_year": 2026},
+                {"legislation_type": "wsi", "document_count": 8123, "first_year": 1999, "last_year": 2026},
+            ]
+        }
+
     def get_document(self, document_path: str) -> dict[str, Any]:
         self.calls.append(("get_document", {"document_path": document_path}))
         return {
@@ -200,19 +209,96 @@ def test_root_redirects_to_documents() -> None:
     assert response.headers["location"] == "/documents"
 
 
-def test_documents_page_renders_filters_and_initial_results() -> None:
+def test_documents_page_without_filters_renders_landing_with_corpus_map() -> None:
     fake_api = FakeApiClient()
     client = TestClient(create_app(api_client=fake_api))
 
     response = client.get("/documents")
 
     assert response.status_code == 200
-    assert "Legislation browser" in response.text
+    assert "statute book" in response.text
+    assert "UK Public General Acts" in response.text
+    assert 'href="/documents?legislation_type=ukpga"' in response.text
+    assert "3,600" in response.text
+    assert "11,723 documents" in response.text
+    assert "Industry and Exports" not in response.text
+    assert [call[0] for call in fake_api.calls] == ["get_corpus_summary"]
+
+
+def test_documents_page_landing_survives_summary_api_failure() -> None:
+    class NoSummaryApiClient(FakeApiClient):
+        def get_corpus_summary(self) -> dict[str, Any]:
+            raise RuntimeError("API unavailable")
+
+    client = TestClient(create_app(api_client=NoSummaryApiClient()))
+
+    response = client.get("/documents")
+
+    assert response.status_code == 200
+    assert "UK Public General Acts" in response.text
+    assert 'href="/documents?legislation_type=ukpga"' in response.text
+
+
+def test_documents_page_with_filters_renders_search_results() -> None:
+    fake_api = FakeApiClient()
+    client = TestClient(create_app(api_client=fake_api))
+
+    response = client.get("/documents?legislation_type=ukpga")
+
+    assert response.status_code == 200
+    assert "Search results" in response.text
     assert 'name="legislation_type"' in response.text
     assert "UK Public General Acts" in response.text
-    assert "Prospective, current, or unknown" in response.text
     assert "Industry and Exports" in response.text
-    assert 'hx-get="/documents/results"' in response.text
+    assert fake_api.calls[0][0] == "list_documents"
+
+
+def test_documents_page_treats_empty_form_fields_as_absent() -> None:
+    fake_api = FakeApiClient()
+    client = TestClient(create_app(api_client=fake_api))
+
+    response = client.get("/documents?q=exports&legislation_type=&year=&number=&status=&extent=&metadata_only=")
+
+    assert response.status_code == 200
+    assert "Industry and Exports" in response.text
+    assert fake_api.calls[0] == (
+        "list_documents",
+        {
+            "legislation_type": None,
+            "year": None,
+            "number": None,
+            "status": None,
+            "extent": None,
+            "metadata_only": None,
+            "q": "exports",
+            "limit": 50,
+            "offset": 0,
+        },
+    )
+
+
+def test_documents_page_with_only_empty_form_fields_renders_landing() -> None:
+    fake_api = FakeApiClient()
+    client = TestClient(create_app(api_client=fake_api))
+
+    response = client.get("/documents?q=&legislation_type=&year=")
+
+    assert response.status_code == 200
+    assert "statute book" in response.text
+    assert not any(call[0] == "list_documents" for call in fake_api.calls)
+
+
+def test_documents_page_paginates_with_prev_and_next_links() -> None:
+    fake_api = FakeApiClient()
+    client = TestClient(create_app(api_client=fake_api))
+
+    response = client.get("/documents?legislation_type=ukpga&limit=1&offset=1")
+
+    assert response.status_code == 200
+    assert "/documents?legislation_type=ukpga&amp;limit=1" in response.text
+    assert "/documents?legislation_type=ukpga&amp;limit=1&amp;offset=2" in response.text
+    assert "Previous page" in response.text
+    assert "Next page" in response.text
 
 
 def test_documents_results_partial_passes_filters() -> None:
@@ -269,7 +355,7 @@ def test_document_detail_renders_latest_version_and_htmx_controls() -> None:
     assert 'hx-get="/versions/point-in-time:2026-05-05:ukpga/2026/14/content"' in response.text
 
 
-def test_pdf_route_streams_pdf_from_source_url() -> None:
+def test_pdf_route_serves_pdf_from_source_url() -> None:
     client = TestClient(create_app(api_client=FakeApiClient()))
 
     response = client.get("/versions/point-in-time:2026-05-05:ukpga/2026/14/pdf")
@@ -278,6 +364,21 @@ def test_pdf_route_streams_pdf_from_source_url() -> None:
     assert response.content == b"%PDF-1.4 example"
     assert response.headers["content-type"].startswith("application/pdf")
     assert response.headers["content-disposition"] == 'inline; filename="source.pdf"'
+    assert response.headers["content-length"] == str(len(b"%PDF-1.4 example"))
+
+
+def test_pdf_route_caches_repeat_requests() -> None:
+    fake_api = FakeApiClient()
+    client = TestClient(create_app(api_client=fake_api))
+
+    first = client.get("/versions/point-in-time:2026-05-05:ukpga/2026/14/pdf")
+    fetches_after_first = sum(1 for call in fake_api.calls if call[0] == "iter_pdf_source")
+    second = client.get("/versions/point-in-time:2026-05-05:ukpga/2026/14/pdf")
+    fetches_after_second = sum(1 for call in fake_api.calls if call[0] == "iter_pdf_source")
+
+    assert first.content == second.content == b"%PDF-1.4 example"
+    assert fetches_after_first == 1
+    assert fetches_after_second == 1
 
 
 def test_pdf_route_prefers_cached_pdf_content_path() -> None:
@@ -316,7 +417,7 @@ def test_api_errors_render_friendly_message() -> None:
 
     client = TestClient(create_app(api_client=BrokenApiClient()))
 
-    response = client.get("/documents")
+    response = client.get("/documents?q=exports")
 
     assert response.status_code == 200
     assert "API unavailable" in response.text

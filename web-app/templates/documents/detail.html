@@ -1,49 +1,44 @@
 {% extends "base.html" %}
 
-{% block title %}{% if document %}{{ document.title }}{% else %}Document{% endif %}{% endblock %}
+{% block title %}{% if document %}{{ document.title }}{% else %}Document{% endif %} — git-legislation{% endblock %}
 {% block page_class %}reader-page{% endblock %}
 
 {% block content %}
-  <p class="back-link"><a href="/documents">&larr; Back to documents</a></p>
+  <p class="back-link"><a href="/documents">&lsaquo; Back to documents</a></p>
 
   {% if error %}
     <div class="notice error">Could not load document: {{ error }}</div>
   {% elif document %}
-    <article class="document-hero compact">
+    <article class="document-header">
       <div class="document-title-block">
+        {% if type_label %}<span class="caption">{{ type_label }}</span>{% endif %}
         <h1>{{ document.title }}</h1>
-        <p class="lede">Parsed text with source material available for comparison.</p>
         {% if document.document_uri %}
-          <p><a class="source-link" href="{{ document.document_uri }}">View on legislation.gov.uk</a></p>
+          <p class="document-source"><a class="source-link" href="{{ document.document_uri }}">View on legislation.gov.uk</a></p>
         {% endif %}
       </div>
-      <dl class="metadata-grid">
-        <div>
-          <dt>ID</dt>
+      <dl class="summary-list">
+        <div class="summary-row">
+          <dt>Identifier</dt>
           <dd>{{ document.id }}</dd>
         </div>
-        <div>
-          <dt>Type</dt>
-          <dd>{{ document.legislation_type }}</dd>
-        </div>
-        <div>
-          <dt>Year / number</dt>
-          <dd>{{ document.year }} / {{ document.number }}</dd>
+        <div class="summary-row">
+          <dt>Citation</dt>
+          <dd>{{ document.year }} {% if chapter_cited %}c.{% else %}No.{% endif %} {{ document.number }}</dd>
         </div>
         {% if document.status %}
-          <div>
+          <div class="summary-row">
             <dt>Status</dt>
             <dd>{{ document.status }}</dd>
           </div>
         {% endif %}
         {% if document.extent %}
-          <div>
+          <div class="summary-row">
             <dt>Extent</dt>
-            <dd>{{ document.extent }}</dd>
+            <dd>{{ document.extent }} <span class="field-help">(E England, W Wales, S Scotland, N.I. Northern Ireland)</span></dd>
           </div>
         {% endif %}
       </dl>
-      <p class="field-help">Extent codes: E = England, W = Wales, S = Scotland, N.I. = Northern Ireland.</p>
     </article>
 
     {% if document.latest_version %}
@@ -54,7 +49,7 @@
           <div class="reader-toolbar-title">
             <h2>Parsed law</h2>
             <p class="metadata">
-              {{ content_label }} · {{ latest.id }} · {{ latest.version_kind }}{% if latest.snapshot_date %} · {{ latest.snapshot_date }}{% endif %}
+              {{ content_label }} &middot; {{ latest.id }} &middot; {{ latest.version_kind }}{% if latest.snapshot_date %} &middot; {{ latest.snapshot_date }}{% endif %}
             </p>
           </div>
           {% if pdf_file and pdf_file.source_url %}
@@ -65,15 +60,15 @@
           {% endif %}
           <div class="actions">
             {% if pdf_file and pdf_file.source_url %}
-              <label class="toggle-source" for="source-toggle">
+              <label class="button button-secondary toggle-source" for="source-toggle">
                 <span class="when-source-visible">Hide PDF</span>
                 <span class="when-source-hidden">Show PDF</span>
               </label>
-              <a class="toolbar-link" href="{{ pdf_file.source_url }}">Open PDF in a new tab</a>
+              <a class="button button-secondary" href="{{ pdf_file.source_url }}">Open PDF in a new tab</a>
             {% endif %}
-            <button hx-get="/versions/{{ latest.id }}/provisions" hx-target="#version-panel">Provisions</button>
-            <button hx-get="/versions/{{ latest.id }}/files" hx-target="#version-panel">Files</button>
-            <button hx-get="/versions/{{ latest.id }}/content" hx-target="#version-panel">Raw Markdown</button>
+            <button class="button button-secondary" hx-get="/versions/{{ latest.id }}/provisions" hx-target="#version-panel">Provisions</button>
+            <button class="button button-secondary" hx-get="/versions/{{ latest.id }}/files" hx-target="#version-panel">Files</button>
+            <button class="button button-secondary" hx-get="/versions/{{ latest.id }}/content" hx-target="#version-panel">Raw Markdown</button>
           </div>
         </div>
 

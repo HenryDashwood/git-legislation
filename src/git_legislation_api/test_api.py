@@ -59,6 +59,13 @@ class FakeRepository:
             }
         ]
 
+    def summarize_documents(self) -> list[dict[str, Any]]:
+        self.calls["summarize_documents"] = True
+        return [
+            {"legislation_type": "ukpga", "document_count": 3600, "first_year": 1801, "last_year": 2026},
+            {"legislation_type": "wsi", "document_count": 8100, "first_year": 1999, "last_year": 2026},
+        ]
+
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         self.calls["get_document"] = document_id
         if document_id != "ukpga/2026/14":
@@ -189,6 +196,22 @@ def test_healthz_returns_ok(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_corpus_summary_returns_per_type_counts(tmp_path: Path) -> None:
+    repository = FakeRepository()
+    client = TestClient(create_app(repository=repository, storage=FakeStorage(tmp_path / "missing.md")))
+
+    response = client.get("/corpus/summary")
+
+    assert response.status_code == 200
+    assert repository.calls["summarize_documents"] is True
+    assert response.json() == {
+        "items": [
+            {"legislation_type": "ukpga", "document_count": 3600, "first_year": 1801, "last_year": 2026},
+            {"legislation_type": "wsi", "document_count": 8100, "first_year": 1999, "last_year": 2026},
+        ]
+    }
 
 
 def test_list_documents_passes_filters_and_returns_items(tmp_path: Path) -> None:

@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-app",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "--directory", "web-app", "uvicorn", "main:app", "--port", "8002", "--reload"],
+      "port": 8002,
+      "autoPort": false
+    }
+  ]
+}

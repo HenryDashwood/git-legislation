@@ -1,85 +1,99 @@
 {% extends "base.html" %}
 
-{% block title %}Legislation browser{% endblock %}
+{% block title %}git-legislation — the statute book, under version control{% endblock %}
 
 {% block content %}
-  <section class="panel">
-    <div class="section-heading">
-      <div>
-        <h1>Legislation browser</h1>
-        <p class="lede">Search the local corpus by identity, status, extent, and source coverage.</p>
-      </div>
-      <div class="help-card">
-        <strong>What is a type?</strong>
-        <p>Legislation type codes come from legislation.gov.uk. For example, <code>ukpga</code> means UK Public General Acts and <code>uksi</code> means UK Statutory Instruments.</p>
-      </div>
-    </div>
+  <div class="landing">
 
-    <form
-      class="filters"
-      hx-get="/documents/results"
-      hx-target="#document-results"
-      hx-push-url="true"
-    >
-      <label>
-        Type
-        <select name="legislation_type">
-          <option value="">All types</option>
-          {% for item in legislation_types %}
-            <option value="{{ item.code }}" {% if filters.legislation_type == item.code %}selected{% endif %}>
-              {{ item.code }} — {{ item.label }}
-            </option>
-          {% endfor %}
-        </select>
-        <span class="field-help">Choose a legislation.gov.uk category such as Acts, statutory instruments, or devolved legislation.</span>
-      </label>
-      <label>
-        Year
-        <input name="year" type="number" value="{{ filters.year }}" placeholder="2026">
-        <span class="field-help">Calendar year where known. Some older records use historical year strings internally.</span>
-      </label>
-      <label>
-        Number
-        <input name="number" value="{{ filters.number }}" placeholder="14">
-        <span class="field-help">The numbered item within a type/year, for example chapter 14.</span>
-      </label>
-      <label>
-        Status
-        <select name="status">
-          <option value="">Any status</option>
-          {% for status in status_options %}
-            <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
-          {% endfor %}
-        </select>
-        <span class="field-help">Prospective, current, or unknown status as recorded in source metadata.</span>
-      </label>
-      <label>
-        Extent
-        <input name="extent" value="{{ filters.extent }}" placeholder="E+W+S+N.I.">
-        <span class="field-help">Jurisdiction extent codes: E, W, S, and N.I. mean England, Wales, Scotland, and Northern Ireland.</span>
-      </label>
-      <label>
-        Text coverage
-        <select name="metadata_only">
-          {% for option in metadata_options %}
-            <option value="{{ option.value }}" {% if filters.metadata_only == option.value %}selected{% endif %}>{{ option.label }}</option>
-          {% endfor %}
-        </select>
-        <span class="field-help">Metadata/PDF-backed records may not have full parsed CLML text yet.</span>
-      </label>
-      <label>
-        Search
-        <input name="q" value="{{ filters.q }}" placeholder="exports">
-        <span class="field-help">Matches document titles for now; provision search is a later API step.</span>
-      </label>
-      <div class="filter-actions">
-        <button type="submit">Apply filters</button>
-        <a class="secondary-action" href="/documents">Reset</a>
+    {# 1 — What this is #}
+    <section class="hero">
+      <h1 class="landing-title">The statute book,<br>under version control.</h1>
+      <div class="hero-explainer">
+        <p class="lede">
+          git&#8211;legislation is a research mirror of
+          <a href="https://www.legislation.gov.uk">legislation.gov.uk</a>: every Act and statutory
+          instrument from every UK legislature, captured as reproducible point&#8209;in&#8209;time
+          snapshots{% if timeline.total_label %} &#8212; {{ timeline.total_label }} documents and counting{% endif %}.
+        </p>
+        <dl class="offer-list">
+          <div class="offer">
+            <dt>Search the corpus</dt>
+            <dd>Filter by series, year, number, status, and jurisdictional extent.</dd>
+          </div>
+          <div class="offer">
+            <dt>Read side by side</dt>
+            <dd>Parsed statute text next to the source PDF it was derived from.</dd>
+          </div>
+          <div class="offer">
+            <dt>Trace the record</dt>
+            <dd>Snapshots record the law as it stood on a given date, so results can be reproduced.</dd>
+          </div>
+        </dl>
       </div>
-    </form>
-  </section>
+    </section>
 
-  <section id="document-results">
-    {% include "documents/_results.html" %}
-  </section>
+    {# 2 — Search #}
+    <section class="search-section">
+      <h2 class="section-title">Find a document</h2>
+      <form class="search-hero" action="/documents" method="get" role="search">
+        <div class="search-grid">
+          <label class="search-field grow">
+            <span class="label-text">Title contains</span>
+            <input id="landing-q" name="q" type="search" spellcheck="false" autocomplete="off" placeholder="e.g. official secrets">
+          </label>
+          <label class="search-field">
+            <span class="label-text">Series</span>
+            <select name="legislation_type">
+              <option value="">All series</option>
+              {% for item in legislation_types %}
+                <option value="{{ item.code }}">{{ item.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="search-field year-field">
+            <span class="label-text">Year</span>
+            <input name="year" type="number" placeholder="1998">
+          </label>
+          <button type="submit" class="button search-button">Search</button>
+        </div>
+        <p class="field-help">More filters &#8212; status, extent, text coverage &#8212; are on the results page.</p>
+      </form>
+    </section>
+
+    {# 3 — The map #}
+    <section class="timeline-section">
+      <h2 class="section-title">Eight centuries of law</h2>
+      <p class="timeline-intro">
+        Everything here belongs to one of 25 series, from the Acts of the English Parliament
+        ({{ timeline.start_year }}) to the devolved legislatures. Choose a series to start reading.
+      </p>
+
+      <div class="timeline">
+        <div class="timeline-row timeline-scale" aria-hidden="true">
+          <span class="timeline-label"></span>
+          <span class="timeline-track">
+            {% for tick in timeline.ticks %}
+              <span class="timeline-tick" style="left: {{ tick.left_pct }}%">{{ tick.year }}</span>
+            {% endfor %}
+          </span>
+          <span class="timeline-meta"></span>
+        </div>
+        {% for group in timeline.groups %}
+          <h3 class="timeline-group-title mark-{{ group.slug }}">{{ group.title }}</h3>
+          {% for row in group.rows %}
+            <a class="timeline-row" href="/documents?legislation_type={{ row.code }}">
+              <span class="timeline-label">{{ row.label }}</span>
+              <span class="timeline-track">
+                <span class="timeline-bar bar-{{ group.slug }}" style="left: {{ row.left_pct }}%; width: {{ row.width_pct }}%"></span>
+              </span>
+              <span class="timeline-meta">
+                {{ row.first_year }}&#8211;{{ row.last_label }}{% if row.count_label %} &middot; {{ row.count_label }}{% endif %}
+              </span>
+            </a>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+
+  </div>
 {% endblock %}

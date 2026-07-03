@@ -14,6 +14,7 @@ from object_store import LocalObjectStore
 from .db import connection_from_pool, create_pool
 from .repositories import PostgresRepository
 from .schemas import (
+    CorpusSummaryResponse,
     DocumentDetail,
     DocumentListResponse,
     FileListResponse,
@@ -103,6 +104,10 @@ def create_app(
             offset=offset,
         )
         return {"items": items, "limit": limit, "offset": offset}
+
+    @app.get("/corpus/summary", response_model=CorpusSummaryResponse)
+    def corpus_summary(request: Request) -> dict[str, Any]:
+        return {"items": request.app.state.repository.summarize_documents()}
 
     @app.get("/documents/{document_path:path}/versions", response_model=VersionListResponse)
     def list_versions(request: Request, document_path: str) -> dict[str, Any]:

@@ -83,6 +83,19 @@ class DocumentListResponse(BaseModel):
     offset: int
 
 
+class LegislationTypeSummary(BaseModel):
+    legislation_type: str
+    document_count: int
+    first_year: int | None = None
+    last_year: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class CorpusSummaryResponse(BaseModel):
+    items: list[LegislationTypeSummary]
+
+
 class VersionListResponse(BaseModel):
     items: list[VersionSummary]
 

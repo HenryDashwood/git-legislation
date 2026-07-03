@@ -107,6 +107,23 @@ class PostgresRepository:
             )
             return document
 
+    def summarize_documents(self) -> list[dict[str, Any]]:
+        with self.connection_factory() as connection:
+            return _fetch_all(
+                connection,
+                """
+                select
+                    legislation_type,
+                    count(*) as document_count,
+                    min(calendar_year) as first_year,
+                    max(calendar_year) as last_year
+                from documents
+                group by legislation_type
+                order by legislation_type
+                """,
+                [],
+            )
+
     def list_versions(self, document_id: str) -> list[dict[str, Any]]:
         with self.connection_factory() as connection:
             return _fetch_all(
