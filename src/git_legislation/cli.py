@@ -454,7 +454,13 @@ def _ingest_point_in_time_year(
     log: Callable[[str], None] | None,
 ) -> PublishReport:
     report = PublishReport(collection="point-in-time", snapshot_date=at, database_path="Postgres")
-    documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year, log=log)
+    try:
+        documents = fetch_year_document_refs(client, legislation_type=legislation_type, year=year, log=log)
+    except Exception as error:
+        report.failures.append(f"{legislation_type} {year} feed: {error}")
+        if log is not None:
+            log(f"Failed to list {legislation_type} {year} documents: {error}")
+        return report
     publish_run_id = create_publish_run(
         connection,
         collection="point-in-time",

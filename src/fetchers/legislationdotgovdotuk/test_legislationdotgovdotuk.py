@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import httpx
+import pytest
 
 from fetchers.legislationdotgovdotuk import (
     POINT_IN_TIME_CORPUS_END_YEARS,
@@ -471,6 +472,82 @@ def test_fetch_year_document_refs_splits_number_ranges_when_year_feed_is_too_bro
         "https://www.legislation.gov.uk/ukla/1803/101-200/data.feed?page=2",
         "Discovered 2 documents in ukla 1803 101-200: 4 year total",
     ]
+
+
+def test_fetch_year_document_refs_retries_transient_436_on_number_range_feeds(monkeypatch) -> None:
+    requested_urls: list[str] = []
+    messages: list[str] = []
+    sleep_calls: list[float] = []
+    range_1_attempts = 0
+
+    range_1 = b"""
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <title>Instrument 1</title>
+        <link rel="alternate" href="http://www.legislation.gov.uk/wsi/2005/1"/>
+      </entry>
+    </feed>
+    """
+    empty_range = b"""<feed xmlns="http://www.w3.org/2005/Atom"/>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal range_1_attempts
+        requested_urls.append(str(request.url))
+        if str(request.url) == "https://www.legislation.gov.uk/wsi/2005/data.feed":
+            return httpx.Response(436, content=b"too broad", request=request)
+        if str(request.url) == "https://www.legislation.gov.uk/wsi/2005/1-100/data.feed":
+            range_1_attempts += 1
+            if range_1_attempts <= 2:
+                return httpx.Response(436, content=b"unavailable", request=request)
+            return httpx.Response(200, content=range_1)
+        if str(request.url) == "https://www.legislation.gov.uk/wsi/2005/101-200/data.feed":
+            return httpx.Response(200, content=empty_range)
+        return httpx.Response(404, request=request)
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    documents = fetch_year_document_refs(client, legislation_type="wsi", year=2005, log=messages.append)
+
+    assert range_1_attempts == 3
+    assert sleep_calls == [30.0, 60.0]
+    assert documents == [
+        DocumentRef(
+            legislation_type="wsi",
+            year=2005,
+            number=1,
+            title="Instrument 1",
+            source_path=("wsi", "2005", "1"),
+        ),
+    ]
+    assert messages == [
+        "Splitting wsi 2005 feed into 100-number ranges",
+        "Feed unavailable (436) for https://www.legislation.gov.uk/wsi/2005/1-100/data.feed; "
+        "waiting 30s before retry 1/5",
+        "Feed unavailable (436) for https://www.legislation.gov.uk/wsi/2005/1-100/data.feed; "
+        "waiting 60s before retry 2/5",
+        "Discovered 1 documents in wsi 2005 1-100: 1 year total",
+    ]
+
+
+def test_fetch_year_document_refs_raises_when_number_range_436_persists(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+    range_1_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal range_1_attempts
+        if str(request.url) == "https://www.legislation.gov.uk/wsi/2005/1-100/data.feed":
+            range_1_attempts += 1
+        return httpx.Response(436, content=b"unavailable", request=request)
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fetch_year_document_refs(client, legislation_type="wsi", year=2005)
+
+    assert range_1_attempts == 6
+    assert sleep_calls == [30.0, 60.0, 120.0, 240.0, 300.0]
 
 
 def test_create_client_sets_legislation_api_headers() -> None:

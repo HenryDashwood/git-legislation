@@ -30,6 +30,9 @@ USER_AGENT = "git-legislation/0.1"
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
 EMPTY_YEAR_LOG_INTERVAL = 100
 FEED_NUMBER_RANGE_SIZE = 100
+FEED_RANGE_436_RETRIES = 5
+FEED_RANGE_436_BACKOFF_SECONDS = 30.0
+FEED_RANGE_436_MAX_BACKOFF_SECONDS = 300.0
 REQUEST_RETRY_DELAY_SECONDS = 1.0
 REQUEST_RETRIES = 2
 REQUEST_SERVER_ERROR_RETRIES = 5
@@ -522,7 +525,7 @@ def _fetch_year_document_refs_by_number_range(
             end_number=end_number,
         )
         try:
-            range_documents = _fetch_document_refs_from_feed(client, url, log=log)
+            range_documents = _fetch_number_range_documents(client, url, log=log)
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 404:
                 break
@@ -540,6 +543,33 @@ def _fetch_year_document_refs_by_number_range(
         start_number = end_number + 1
 
     return documents
+
+
+def _fetch_number_range_documents(
+    client: FetchClient,
+    url: str,
+    log: Callable[[str], None] | None = None,
+) -> list[DocumentRef]:
+    # A number-range feed is never too broad, so a 436 here means the search
+    # backend is under strain rather than the query being unanswerable.
+    attempts = 0
+    while True:
+        try:
+            return _fetch_document_refs_from_feed(client, url, log=log)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 436 or attempts == FEED_RANGE_436_RETRIES:
+                raise
+            attempts += 1
+            delay_seconds = min(
+                FEED_RANGE_436_BACKOFF_SECONDS * (2 ** (attempts - 1)),
+                FEED_RANGE_436_MAX_BACKOFF_SECONDS,
+            )
+            _log(
+                log,
+                f"Feed unavailable (436) for {url}; waiting {delay_seconds:g}s before retry "
+                f"{attempts}/{FEED_RANGE_436_RETRIES}",
+            )
+            time.sleep(delay_seconds)
 
 
 def fetch_year_documents(
