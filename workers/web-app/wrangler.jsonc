@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "git-legislation-web-app",
+  "main": "src/index.tsx",
+  "compatibility_date": "2026-06-01",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "API",
+      "service": "git-legislation-read-api"
+    }
+  ]
+}

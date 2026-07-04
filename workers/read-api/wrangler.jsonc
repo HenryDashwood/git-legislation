@@ -1,0 +1,31 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "git-legislation-read-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-06-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	"hyperdrive": [
+		{
+			"binding": "HYPERDRIVE",
+			// Create with: wrangler hyperdrive create git-legislation --connection-string="$PSCALE_URL"
+			// then paste the returned id here.
+			"id": "adb06641267a44d9bf124e3592dd5392",
+			// wrangler dev connects here instead of the real Hyperdrive config.
+			"localConnectionString": "postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "british-legislation"
+		}
+	],
+	"vars": {
+		"CORS_ORIGINS": ""
+	}
+}

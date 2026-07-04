@@ -30,6 +30,14 @@ output/publish/*
 **/.envrc
 
 .cursor
+.claude
 .impeccable
 
 **/.DS_Store
+# Workers
+workers/**/node_modules/
+workers/**/.wrangler/
+
+
+**/node_modules/
+workers/**/.dev.vars
