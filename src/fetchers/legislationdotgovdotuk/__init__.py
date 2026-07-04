@@ -41,6 +41,9 @@ REQUEST_SERVER_ERROR_MAX_BACKOFF_SECONDS = 60.0
 REQUEST_RATE_LIMIT_RETRIES = 5
 REQUEST_RATE_LIMIT_BACKOFF_SECONDS = 30.0
 REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS = 300.0
+# legislation.gov.uk signals rate limiting with 429 and the non-standard 432
+# (seen on sustained bulk PDF downloads).
+RATE_LIMIT_STATUS_CODES = {429, 432}
 REQUEST_TIMEOUT_SECONDS = 30.0
 SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES = {
     "aep": LegislationType("aep", "Acts of the English Parliament", 1267, 1706),
@@ -229,7 +232,7 @@ class LegislationClient:
                 with urlopen(request, timeout=self.timeout) as response:
                     return FetchResponse(response.status, response.read(), url)
             except HTTPError as error:
-                if error.code == 429 and rate_limit_attempts < self.rate_limit_retries:
+                if error.code in RATE_LIMIT_STATUS_CODES and rate_limit_attempts < self.rate_limit_retries:
                     rate_limit_attempts += 1
                     delay_seconds = self._rate_limit_delay_seconds(error, rate_limit_attempts)
                     _log(

@@ -490,6 +490,10 @@ def parse_pdf_sample_command(
         typer.Option("--target-pages", help='LiteParse page selection, e.g. "1-5,10".'),
     ] = None,
     lit_executable: Annotated[str, typer.Option("--lit-executable", help="LiteParse CLI executable.")] = "lit",
+    delay_seconds: Annotated[
+        float,
+        typer.Option("--delay-seconds", min=0.0, help="Pause between source PDF downloads."),
+    ] = 0.0,
     database_url: Annotated[
         str | None,
         typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
@@ -521,6 +525,7 @@ def parse_pdf_sample_command(
             lit_executable=lit_executable,
             no_ocr=no_ocr,
             target_pages=target_pages,
+            delay_seconds=delay_seconds,
         )
         connection.commit()
     typer.echo(render_pdf_parse_sample_report(report))

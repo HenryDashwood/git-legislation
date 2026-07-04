@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,7 @@ def parse_pdf_sample(
     lit_executable: str = "lit",
     no_ocr: bool = False,
     target_pages: str | None = None,
+    delay_seconds: float = 0.0,
     command_runner: CommandRunner | None = None,
 ) -> PdfParseSampleReport:
     candidates = select_pdf_parse_candidates(
@@ -112,7 +114,9 @@ def parse_pdf_sample(
         force=force,
     )
     report = PdfParseSampleReport(scanned=len(candidates))
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
+        if delay_seconds > 0 and index > 0:
+            time.sleep(delay_seconds)
         try:
             artifacts = parse_pdf_candidate(
                 connection,
@@ -491,9 +495,14 @@ def ensure_pdf_cached(
 ) -> StoredObject:
     key = candidate.object_key or pdf_object_key(candidate)
     pdf_path = object_store.path_for_key(key)
+    if pdf_path.exists() and not _looks_like_pdf(pdf_path.read_bytes()):
+        # Self-heal cache entries poisoned by upstream HTML error pages.
+        pdf_path.unlink()
     if not pdf_path.exists():
         response = client.get(candidate.source_url)
         response.raise_for_status()
+        if not _looks_like_pdf(response.content):
+            raise ValueError(f"Response from {candidate.source_url} is not a PDF")
         content_type = "application/pdf"
         pdf_object = object_store.put_bytes(response.content, key=key, content_type=content_type)
     else:
@@ -728,6 +737,10 @@ def _run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     except subprocess.CalledProcessError as error:
         message = error.stderr.strip() or error.stdout.strip() or str(error)
         raise RuntimeError(f"LiteParse failed: {message}") from error
+
+
+def _looks_like_pdf(content: bytes) -> bool:
+    return content.lstrip()[:5].startswith(b"%PDF")
 
 
 def pdf_object_key(candidate: PdfParseCandidate) -> str:

@@ -132,7 +132,42 @@ Useful v1 endpoints:
 - `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/files`
 - `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/content`
 
-Metadata endpoints read from Postgres. Content endpoints resolve canonical Markdown or XML through database file records, then serve bytes from `var/object-store`.
+Metadata endpoints read from Postgres. Content endpoints resolve canonical Markdown or XML through database file records, then serve bytes from `var/object-store` (or redirect to R2, see below).
+
+## Cloud Backends
+
+Local remains the build environment; PlanetScale Postgres and Cloudflare R2 are the serving copies.
+
+Database: the app is backend-agnostic — point `DB_URL` at the PlanetScale DSN. Schema is managed with the same
+goose migrations:
+
+```bash
+goose -dir db/migrations postgres "$PSCALE_URL" up
+```
+
+Populate (after a local ingestion/parsing run):
+
+```bash
+pg_dump --data-only -Fc "$LOCAL_DB_URL" | pg_restore --data-only -d "$PSCALE_URL"
+```
+
+Objects: sync the local object store to R2 with rclone (idempotent; re-run to pick up deltas):
+
+```bash
+rclone sync var/object-store/legislation r2:british-legislation --transfers 16 --progress
+```
+
+To serve API content from R2 instead of the local filesystem, set:
+
+```bash
+CONTENT_STORE_BACKEND=r2
+R2_URL=https://<account>.r2.cloudflarestorage.com/<bucket>   # or R2_ENDPOINT_URL + R2_BUCKET
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+```
+
+Content endpoints then respond with 307 redirects to short-lived presigned R2 URLs, so object bytes are served
+by Cloudflare rather than proxied through the API host.
 
 ## Web App
 

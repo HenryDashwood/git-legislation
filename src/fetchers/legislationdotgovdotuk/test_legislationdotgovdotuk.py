@@ -1834,3 +1834,49 @@ def test_probe_fetch_report_failures_classifies_missing_all_fallbacks() -> None:
     probe_fetch_report_failures(httpx.Client(transport=httpx.MockTransport(handler)), report)
 
     assert report.failures[0].classification == "dated_xml_unavailable_no_fallback_found"
+
+
+def test_legislation_client_retries_432_pdf_rate_limit(monkeypatch) -> None:
+    calls = 0
+    sleep_calls: list[float] = []
+    messages: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"%PDF-1.4 example"
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                url="https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf",
+                code=432,
+                msg="Blocked",
+                hdrs=Message(),
+                fp=None,
+            )
+        return Response()
+
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
+    monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
+
+    response = create_client(log=messages.append).get(
+        "https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf"
+    )
+
+    assert response.status_code == 200
+    assert calls == 2
+    assert sleep_calls == [30.0]
+    assert messages == [
+        "Rate limited fetching https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf; "
+        "waiting 30s before retry 1/5"
+    ]

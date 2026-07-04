@@ -326,3 +326,50 @@ class RecordingCursor:
 
     def fetchall(self) -> list[tuple[Any, ...]]:
         return self.rows
+
+
+def test_ensure_pdf_cached_rejects_html_and_heals_poisoned_cache(tmp_path: Path) -> None:
+    from pdf_parsing import ensure_pdf_cached
+
+    candidate = PdfParseCandidate(
+        document_file_id=1,
+        document_id="uksi/1954/898",
+        version_id="point-in-time:2026-05-05:uksi/1954/898",
+        source_url="https://www.legislation.gov.uk/uksi/1954/898/made/data.pdf",
+        object_key=None,
+        source_path=("uksi", "1954", "898"),
+        version_kind="point_in_time",
+        snapshot_date="2026-05-05",
+    )
+    object_store = LocalObjectStore(root=tmp_path / "objects")
+    connection = RecordingConnection([])
+
+    class HtmlResponse:
+        status_code = 200
+        content = b"<!DOCTYPE html\n<html>error page</html>"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class HtmlClient:
+        def get(self, url: str) -> HtmlResponse:
+            return HtmlResponse()
+
+    try:
+        ensure_pdf_cached(connection, candidate, client=HtmlClient(), object_store=object_store)
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "not a PDF" in str(error)
+    assert raised
+    assert not object_store.path_for_key(pdf_object_key(candidate)).exists()
+
+    # A poisoned cache entry from before validation existed is replaced.
+    poisoned_key = pdf_object_key(candidate)
+    poisoned_path = object_store.path_for_key(poisoned_key)
+    poisoned_path.parent.mkdir(parents=True, exist_ok=True)
+    poisoned_path.write_bytes(b"<!DOCTYPE html\n<html>old error page</html>")
+
+    pdf_object = ensure_pdf_cached(connection, candidate, client=FakeClient(), object_store=object_store)
+
+    assert object_store.path_for_key(pdf_object.key).read_bytes() == b"%PDF-1.7"

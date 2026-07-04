@@ -31,3 +31,5 @@ output/publish/*
 
 .cursor
 .impeccable
+
+**/.DS_Store

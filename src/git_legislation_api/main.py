@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from object_store import LocalObjectStore
 
@@ -24,7 +24,7 @@ from .schemas import (
     VersionSummary,
 )
 from .settings import ApiSettings, load_settings
-from .storage import LocalContentStore
+from .storage import LocalContentStore, R2ContentStore, ResolvedRemoteContent
 from .types import LegislationTypeCode
 
 
@@ -49,10 +49,7 @@ def create_app(
             app.state.repository = repository
 
         if storage is None:
-            object_store = LocalObjectStore(
-                root=api_settings.object_store_root, bucket=api_settings.object_store_bucket
-            )
-            app.state.storage = LocalContentStore(object_store)
+            app.state.storage = _create_content_store(api_settings)
         else:
             app.state.storage = storage
 
@@ -147,7 +144,7 @@ def create_app(
         request: Request,
         version_id: str,
         kind: str = Query("markdown", pattern="^(markdown|clml_xml)$"),
-    ) -> FileResponse:
+    ) -> Response:
         file_record = request.app.state.repository.get_canonical_file(_clean_path_id(version_id), kind)
         if file_record is None or file_record.get("object_key") is None:
             raise HTTPException(status_code=404, detail="Canonical content not found")
@@ -163,14 +160,10 @@ def create_app(
             raise HTTPException(status_code=404, detail="Content object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return FileResponse(
-            content.path,
-            media_type=content.content_type,
-            headers={"ETag": f'"{content.sha256}"'},
-        )
+        return _content_response(content)
 
     @app.get("/files/{file_id}/content")
-    def get_file_content(request: Request, file_id: int) -> FileResponse:
+    def get_file_content(request: Request, file_id: int) -> Response:
         file_record = request.app.state.repository.get_file(file_id)
         if file_record is None or file_record.get("object_key") is None:
             raise HTTPException(status_code=404, detail="File content not found")
@@ -186,11 +179,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Content object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return FileResponse(
-            content.path,
-            media_type=content.content_type,
-            headers={"ETag": f'"{content.sha256}"'},
-        )
+        return _content_response(content)
 
     @app.get("/versions/{version_id:path}", response_model=VersionSummary)
     def get_version(request: Request, version_id: str) -> dict[str, Any]:
@@ -207,6 +196,25 @@ app = create_app()
 
 def run() -> None:
     uvicorn.run("git_legislation_api.main:app", host="127.0.0.1", port=8000, reload=True)
+
+
+def _create_content_store(api_settings: ApiSettings) -> Any:
+    if api_settings.content_store_backend == "r2":
+        if api_settings.r2 is None:
+            raise RuntimeError("CONTENT_STORE_BACKEND=r2 requires R2 settings.")
+        return R2ContentStore(api_settings.r2)
+    object_store = LocalObjectStore(root=api_settings.object_store_root, bucket=api_settings.object_store_bucket)
+    return LocalContentStore(object_store)
+
+
+def _content_response(content: Any) -> Response:
+    if isinstance(content, ResolvedRemoteContent):
+        return RedirectResponse(content.url, status_code=307, headers={"ETag": f'"{content.sha256}"'})
+    return FileResponse(
+        content.path,
+        media_type=content.content_type,
+        headers={"ETag": f'"{content.sha256}"'},
+    )
 
 
 def _clean_path_id(value: str) -> str:

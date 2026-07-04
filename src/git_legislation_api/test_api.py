@@ -354,3 +354,81 @@ def test_file_content_serves_stored_pdf(tmp_path: Path) -> None:
             "content_type": "application/pdf",
         }
     ]
+
+
+class FakeS3Client:
+    def __init__(self, existing_keys: set[str]) -> None:
+        self.existing_keys = existing_keys
+        self.presign_calls: list[dict[str, Any]] = []
+
+    def head_object(self, Bucket: str, Key: str) -> dict[str, Any]:
+        if Key not in self.existing_keys:
+            error = Exception("Not Found")
+            error.response = {"ResponseMetadata": {"HTTPStatusCode": 404}}  # type: ignore[attr-defined]
+            raise error
+        return {}
+
+    def generate_presigned_url(self, operation: str, Params: dict[str, Any], ExpiresIn: int) -> str:
+        self.presign_calls.append({"operation": operation, "params": Params, "expires_in": ExpiresIn})
+        return f"https://signed.example/{Params['Key']}?sig=abc"
+
+
+def _r2_settings() -> Any:
+    from git_legislation_api.settings import R2Settings
+
+    return R2Settings(
+        endpoint_url="https://account.r2.cloudflarestorage.com",
+        bucket="british-legislation",
+        access_key_id="key",
+        secret_access_key="secret",
+        url_ttl_seconds=300,
+    )
+
+
+def test_version_content_redirects_to_presigned_url_with_r2_storage(tmp_path: Path) -> None:
+    from git_legislation_api.storage import R2ContentStore
+
+    markdown_key = "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+    storage = R2ContentStore(_r2_settings(), client=FakeS3Client({markdown_key}))
+    client = TestClient(create_app(repository=FakeRepository(), storage=storage))
+
+    response = client.get(
+        "/versions/point-in-time:2026-05-05:ukpga/2026/14/content",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.headers["location"] == f"https://signed.example/{markdown_key}?sig=abc"
+    assert response.headers["etag"] == '"abc123"'
+
+
+def test_version_content_returns_404_when_r2_object_missing(tmp_path: Path) -> None:
+    from git_legislation_api.storage import R2ContentStore
+
+    storage = R2ContentStore(_r2_settings(), client=FakeS3Client(set()))
+    client = TestClient(create_app(repository=FakeRepository(), storage=storage))
+
+    response = client.get(
+        "/versions/point-in-time:2026-05-05:ukpga/2026/14/content",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+
+
+def test_load_settings_parses_combined_r2_url(monkeypatch) -> None:
+    from git_legislation_api.settings import load_settings
+
+    monkeypatch.setenv("CONTENT_STORE_BACKEND", "r2")
+    monkeypatch.setenv("R2_URL", "https://account123.r2.cloudflarestorage.com/british-legislation")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.delenv("R2_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("R2_BUCKET", raising=False)
+
+    settings = load_settings()
+
+    assert settings.content_store_backend == "r2"
+    assert settings.r2 is not None
+    assert settings.r2.endpoint_url == "https://account123.r2.cloudflarestorage.com"
+    assert settings.r2.bucket == "british-legislation"
