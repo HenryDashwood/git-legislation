@@ -88,6 +88,11 @@ class FetchClient(Protocol):
 
 CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
+# legislation.gov.uk generates many PDFs on demand and answers 202 while the
+# render runs; a few short retries usually collect the finished file.
+PDF_GENERATION_RETRIES = 3
+PDF_GENERATION_RETRY_DELAY_SECONDS = 5.0
+
 
 def parse_pdf_sample(
     connection: Any,
@@ -486,6 +491,95 @@ def normalize_liteparse_markdown_candidate(
     return markdown_object
 
 
+def select_dynamic_only_pdf_candidates(
+    connection: Any,
+    *,
+    legislation_type: str | None,
+    limit: int,
+) -> tuple[PdfParseCandidate, ...]:
+    """Latest-version PDF rows whose document has no print-version (/pdfs/) URL
+    and no cached object — the class legislation.gov.uk refuses to serve to
+    Cloudflare Workers, so they must be cached from local egress."""
+    clauses = [
+        "df.file_kind = 'pdf'",
+        "df.source_url is not null",
+        "df.object_key is null",
+        """
+        not exists (
+            select 1 from document_files o
+            where o.version_id = df.version_id and o.file_kind = 'pdf'
+              and (o.object_key is not null or o.source_url like '%%/pdfs/%%')
+        )
+        """,
+    ]
+    params: list[Any] = []
+    if legislation_type is not None:
+        clauses.append("d.legislation_type = %s")
+        params.append(legislation_type)
+    params.append(limit)
+    rows = connection.execute(
+        f"""
+        select distinct on (df.version_id)
+            df.id, df.document_id, df.version_id, df.source_url, df.object_key,
+            d.source_path, dv.version_kind, dv.snapshot_date::text
+        from document_files df
+        join documents d on d.id = df.document_id and d.latest_version_id = df.version_id
+        join document_versions dv on dv.id = df.version_id
+        where {" and ".join(clauses)}
+        order by df.version_id, df.id
+        limit %s
+        """,
+        tuple(params),
+    ).fetchall()
+    return tuple(
+        PdfParseCandidate(
+            document_file_id=int(row[0]),
+            document_id=str(row[1]),
+            version_id=str(row[2]),
+            source_url=str(row[3]),
+            object_key=str(row[4]) if row[4] is not None else None,
+            source_path=tuple(str(part) for part in row[5]),
+            version_kind=str(row[6]),
+            snapshot_date=str(row[7]) if row[7] is not None else None,
+        )
+        for row in rows
+    )
+
+
+@dataclass
+class DynamicPdfCacheReport:
+    scanned: int = 0
+    cached: int = 0
+    failures: list[str] = field(default_factory=list)
+
+
+def cache_dynamic_only_pdfs(
+    connection: Any,
+    *,
+    client: FetchClient,
+    object_store: LocalObjectStore,
+    legislation_type: str | None = None,
+    limit: int = 10,
+    delay_seconds: float = 0.0,
+) -> DynamicPdfCacheReport:
+    candidates = select_dynamic_only_pdf_candidates(
+        connection,
+        legislation_type=legislation_type,
+        limit=limit,
+    )
+    report = DynamicPdfCacheReport(scanned=len(candidates))
+    for index, candidate in enumerate(candidates):
+        if delay_seconds > 0 and index > 0:
+            time.sleep(delay_seconds)
+        try:
+            ensure_pdf_cached(connection, candidate, client=client, object_store=object_store)
+        except Exception as error:
+            report.failures.append(f"{candidate.document_id} {candidate.source_url}: {error}")
+            continue
+        report.cached += 1
+    return report
+
+
 def ensure_pdf_cached(
     connection: Any,
     candidate: PdfParseCandidate,
@@ -501,6 +595,12 @@ def ensure_pdf_cached(
     if not pdf_path.exists():
         response = client.get(candidate.source_url)
         response.raise_for_status()
+        generation_attempts = 0
+        while response.status_code == 202 and generation_attempts < PDF_GENERATION_RETRIES:
+            generation_attempts += 1
+            time.sleep(PDF_GENERATION_RETRY_DELAY_SECONDS)
+            response = client.get(candidate.source_url)
+            response.raise_for_status()
         if not _looks_like_pdf(response.content):
             raise ValueError(f"Response from {candidate.source_url} is not a PDF")
         content_type = "application/pdf"

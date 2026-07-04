@@ -23,6 +23,7 @@ from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
 from pdf_parsing import (
     cache_document_marker_markdown,
     cache_document_pdf,
+    cache_dynamic_only_pdfs,
     normalize_liteparse_markdown_sample,
     parse_pdf_sample,
     render_liteparse_markdown_report,
@@ -391,6 +392,56 @@ def corpus_counts(
             object_bytes=_object_bytes(bucket_root),
         )
     typer.echo(render_corpus_counts(counts))
+
+
+@app.command("cache-dynamic-pdfs")
+def cache_dynamic_pdfs_command(
+    legislation_type: Annotated[
+        str | None,
+        typer.Option("--legislation-type", help="Limit to one legislation type code."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Maximum PDFs to cache.")] = 100,
+    delay_seconds: Annotated[
+        float,
+        typer.Option("--delay-seconds", min=0.0, help="Pause between downloads."),
+    ] = 0.5,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Cache PDFs that only exist behind legislation.gov.uk's on-demand generator.
+
+    These cannot be proxied by the production Workers (the generator refuses
+    Cloudflare egress), so they must be fetched from local egress into the
+    object store, from where the drain ships them to R2.
+    """
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        report = cache_dynamic_only_pdfs(
+            connection,
+            client=client,
+            object_store=object_store,
+            legislation_type=legislation_type,
+            limit=limit,
+            delay_seconds=delay_seconds,
+        )
+        connection.commit()
+    typer.echo(f"Scanned {report.scanned} dynamic-only PDFs; cached {report.cached}, {len(report.failures)} failures")
+    for failure in report.failures[:20]:
+        typer.echo(f"  {failure}")
 
 
 @app.command("cache-pdf")

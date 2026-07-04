@@ -184,32 +184,94 @@ async function servePdf(
     throw error;
   }
 
-  const cachedPdf = files.find((file) => file["file_kind"] === "pdf" && file["object_key"]);
-  const sourcePdf = files.find((file) => file["file_kind"] === "pdf" && file["source_url"]);
+  const pdfFiles = files.filter((file) => file["file_kind"] === "pdf");
 
-  let upstream: Response;
-  if (cachedPdf !== undefined) {
-    upstream = await api.getFileContentResponse(Number(cachedPdf["id"]));
-  } else if (sourcePdf !== undefined) {
-    upstream = await fetch(String(sourcePdf["source_url"]));
-  } else {
-    return Response.json({ detail: "PDF source not found" }, { status: 404 });
+  // Try every candidate until one yields a real PDF: the cached object first,
+  // then print-version URLs (/pdfs/...), then dynamically generated ones like
+  // {date}/data.pdf, which legislation.gov.uk often answers with 202/404
+  // while it renders them.
+  const attempts: (() => Promise<Response>)[] = [];
+  for (const file of pdfFiles.filter((file) => file["object_key"])) {
+    attempts.push(() => api.getFileContentResponse(Number(file["id"])));
   }
-  if (!upstream.ok) {
-    return Response.json({ detail: `PDF fetch failed: ${upstream.status}` }, { status: 502 });
+  const sourceUrls = [...new Set(pdfFiles.map((file) => file["source_url"]).filter(Boolean))].map(
+    String,
+  );
+  sourceUrls.sort((a, b) => Number(b.includes("/pdfs/")) - Number(a.includes("/pdfs/")));
+  for (const url of sourceUrls) {
+    attempts.push(() => fetchPossiblyGeneratedPdf(url));
+  }
+  if (attempts.length === 0) {
+    return pdfUnavailable("No PDF is recorded for this version.");
   }
 
-  const body = await upstream.arrayBuffer();
-  const response = new Response(body, {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Length": String(body.byteLength),
-      "Content-Disposition": 'inline; filename="source.pdf"',
-      "Cache-Control": "public, max-age=3600",
-    },
-  });
-  executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+  for (const attempt of attempts) {
+    let upstream: Response;
+    try {
+      upstream = await attempt();
+    } catch (error) {
+      console.warn(`pdf candidate threw for ${versionId}: ${String(error)}`);
+      continue;
+    }
+    if (upstream.status !== 200) {
+      console.warn(`pdf candidate ${upstream.url || "(cached object)"} -> ${upstream.status} for ${versionId}`);
+      continue;
+    }
+    const body = await upstream.arrayBuffer();
+    if (!looksLikePdf(body)) {
+      console.warn(`pdf candidate ${upstream.url || "(cached object)"} not a PDF for ${versionId}`);
+      continue;
+    }
+    const response = new Response(body, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Length": String(body.byteLength),
+        "Content-Disposition": 'inline; filename="source.pdf"',
+        "Cache-Control": "public, max-age=3600",
+      },
+    });
+    executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+    return response;
+  }
+  return pdfUnavailable(
+    "legislation.gov.uk does not serve this PDF to our proxy - it is generated on demand and only offered directly to browsers.",
+    sourceUrls[0],
+  );
+}
+
+/**
+ * legislation.gov.uk generates many PDFs on demand, answering 202 while the
+ * render runs (a few seconds). Wait it out rather than giving up. It also
+ * answers 404 to requests without a User-Agent, and Workers' fetch sends
+ * none by default.
+ */
+async function fetchPossiblyGeneratedPdf(url: string): Promise<Response> {
+  const headers = { "User-Agent": "git-legislation/0.1" };
+  let response = await fetch(url, { headers });
+  for (let retry = 0; retry < 3 && response.status === 202; retry += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    response = await fetch(url, { headers });
+  }
   return response;
+}
+
+function looksLikePdf(body: ArrayBuffer): boolean {
+  const head = new TextDecoder().decode(body.slice(0, 8));
+  return head.trimStart().startsWith("%PDF");
+}
+
+/** Rendered inside the reader's iframe, so return readable HTML, not JSON. */
+function pdfUnavailable(message: string, sourceUrl?: string): Response {
+  const link =
+    sourceUrl !== undefined
+      ? `<p><a href="${sourceUrl}" target="_blank" rel="noopener">Open the PDF on legislation.gov.uk</a> (it may take a few seconds to generate)</p>`
+      : "";
+  return new Response(
+    `<!doctype html><html><body style="font-family: Georgia, serif; background: #f7f3ea; color: #1a1712; padding: 2rem;">
+      <p>${message}</p>${link}
+    </body></html>`,
+    { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } },
+  );
 }
 
 export { LEGISLATION_TYPE_FILTER_KEYS };

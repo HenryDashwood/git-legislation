@@ -373,3 +373,46 @@ def test_ensure_pdf_cached_rejects_html_and_heals_poisoned_cache(tmp_path: Path)
     pdf_object = ensure_pdf_cached(connection, candidate, client=FakeClient(), object_store=object_store)
 
     assert object_store.path_for_key(pdf_object.key).read_bytes() == b"%PDF-1.7"
+
+
+def test_ensure_pdf_cached_waits_out_202_generation(monkeypatch, tmp_path: Path) -> None:
+    from pdf_parsing import ensure_pdf_cached
+
+    candidate = PdfParseCandidate(
+        document_file_id=1,
+        document_id="aep/Edw2/7/0",
+        version_id="point-in-time:2026-05-05:aep/Edw2/7/0",
+        source_url="https://www.legislation.gov.uk/aep/Edw2/7/0/2026-05-05/data.pdf",
+        object_key=None,
+        source_path=("aep", "Edw2", "7", "0"),
+        version_kind="point_in_time",
+        snapshot_date="2026-05-05",
+    )
+    object_store = LocalObjectStore(root=tmp_path / "objects")
+    connection = RecordingConnection([])
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("pdf_parsing.time.sleep", sleep_calls.append)
+
+    class GeneratingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, url: str):
+            self.calls += 1
+            calls = self.calls
+
+            class R:
+                status_code = 202 if calls <= 2 else 200
+                content = b"please wait" if calls <= 2 else b"%PDF-1.4 generated"
+
+                def raise_for_status(self) -> None:
+                    return None
+
+            return R()
+
+    client = GeneratingClient()
+    pdf_object = ensure_pdf_cached(connection, candidate, client=client, object_store=object_store)
+
+    assert client.calls == 3
+    assert sleep_calls == [5.0, 5.0]
+    assert object_store.path_for_key(pdf_object.key).read_bytes() == b"%PDF-1.4 generated"

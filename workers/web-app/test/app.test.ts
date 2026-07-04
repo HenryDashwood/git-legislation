@@ -211,3 +211,90 @@ describe("web app worker", () => {
     }
   });
 });
+
+describe("pdf proxy fallbacks", () => {
+  const MULTI_PDF_FILES = [
+    { id: 5, file_kind: "pdf", object_key: null, source_url: "https://www.legislation.gov.uk/asc/2026/3/2026-05-05/data.pdf" },
+    { id: 6, file_kind: "pdf", object_key: null, source_url: "https://www.legislation.gov.uk/asc/2026/3/pdfs/asc_20260003_en.pdf" },
+  ];
+
+  it("falls through failing candidates and prefers /pdfs/ urls", async () => {
+    const fetched: string[] = [];
+    const app = createApp();
+    const fetcher = fakeApiFetcher({
+      [`/versions/${VERSION.id}/files`]: () => Response.json({ items: MULTI_PDF_FILES }),
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      fetched.push(url);
+      if (url.includes("/pdfs/")) {
+        return new Response("%PDF-1.7 real", { headers: { "Content-Type": "application/pdf" } });
+      }
+      return new Response("try later", { status: 202 });
+    }) as typeof fetch;
+    try {
+      const response = await app.request(
+        `https://example.com/versions/${VERSION.id}/pdf?v=fallback`,
+        {},
+        envWith(fetcher),
+        executionCtx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("%PDF-1.7 real");
+      expect(fetched[0]).toContain("/pdfs/");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("returns a readable html notice when no candidate yields a pdf", async () => {
+    const app = createApp();
+    const fetcher = fakeApiFetcher({
+      [`/versions/${VERSION.id}/files`]: () => Response.json({ items: MULTI_PDF_FILES }),
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("<html>not a pdf</html>", { status: 200 })) as typeof fetch;
+    try {
+      const response = await app.request(
+        `https://example.com/versions/${VERSION.id}/pdf?v=allfail`,
+        {},
+        envWith(fetcher),
+        executionCtx,
+      );
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(await response.text()).toContain("legislation.gov.uk");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+  it("waits out 202 pdf-generation responses", async () => {
+    let calls = 0;
+    const app = createApp();
+    const fetcher = fakeApiFetcher();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("generating, please wait", { status: 202 });
+      }
+      return new Response("%PDF-1.5 generated", { headers: { "Content-Type": "application/pdf" } });
+    }) as typeof fetch;
+    try {
+      const response = await app.request(
+        `https://example.com/versions/${VERSION.id}/pdf?v=generated`,
+        {},
+        envWith(fetcher),
+        executionCtx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("%PDF-1.5 generated");
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }, 10000);
