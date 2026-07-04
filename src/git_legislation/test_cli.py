@@ -671,3 +671,135 @@ def test_normalize_liteparse_markdown_sample_command_runs_normalizer(monkeypatch
     assert calls["normalize_args"]["object_store"].root == tmp_path / "objects"
     assert calls["committed"] is True
     assert "Normalized 1 LiteParse reports to Markdown" in result.output
+
+
+def test_rerender_markdown_command_republishes_recovered_documents(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {"published": [], "recorded": []}
+    object_root = tmp_path / "objects"
+    bucket_root = object_root / "legislation"
+
+    full_xml_key = "xml/point-in-time/2026-05-05/uksi/2004/1376/data.xml"
+    stub_xml_key = "xml/point-in-time/2026-05-05/ukla/1932/37/data.xml"
+    for key in (full_xml_key, stub_xml_key):
+        path = bucket_root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"<Legislation>%s</Legislation>" % key.encode())
+
+    rows = [
+        ("uksi/2004/1376", ["uksi", "2004", "1376"], "point_in_time", date(2026, 5, 5), full_xml_key),
+        ("ukla/1932/37", ["ukla", "1932", "37"], "point_in_time", date(2026, 5, 5), stub_xml_key),
+        ("ukla/1900/1", ["ukla", "1900", "1"], "point_in_time", date(2026, 5, 5), "xml/missing/data.xml"),
+    ]
+
+    class FakeCursor:
+        def fetchall(self) -> list[Any]:
+            return rows
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, query: str, params: object = None) -> FakeCursor:
+            calls["query"] = query
+            calls["params"] = params
+            return FakeCursor()
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    def fake_render(xml_content: bytes) -> str:
+        if b"uksi" in xml_content:
+            return "# Full text\n\nReal content."
+        return "# Stub\n\nSource XML contains metadata only; full text may be available in PDF.\n"
+
+    def fake_publish_document_text(connection_arg: object, **kwargs: Any) -> object:
+        calls["published"].append(kwargs["source_path"])
+        return SimpleNamespace(
+            document_id="/".join(kwargs["source_path"]),
+            version_id="point-in-time:2026-05-05:uksi/2004/1376:abc123",
+            source_uri=None,
+            source_sha256="abc",
+            created=True,
+        )
+
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli.render_document_markdown_from_xml", fake_render)
+    monkeypatch.setattr("git_legislation.cli.publish_document_text", fake_publish_document_text)
+    monkeypatch.setattr("git_legislation.cli.create_publish_run", lambda *args, **kwargs: 77)
+    monkeypatch.setattr(
+        "git_legislation.cli.finish_publish_run", lambda *args, **kwargs: calls.setdefault("finished", True)
+    )
+    monkeypatch.setattr(
+        "git_legislation.cli.record_publish_observation",
+        lambda connection, run_id, version: calls["recorded"].append((run_id, version.document_id)),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "rerender-markdown",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(object_root),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["published"] == [("uksi", "2004", "1376")]
+    assert calls["recorded"] == [(77, "uksi/2004/1376")]
+    assert calls["finished"] is True
+    assert calls["committed"] is True
+    assert "Scanned 3: 1 recovered, 1 still metadata-only, 1 missing XML, 0 render failures" in result.output
+
+
+def test_rerender_markdown_command_dry_run_publishes_nothing(monkeypatch, tmp_path: Path) -> None:
+    calls: dict[str, Any] = {"published": []}
+    object_root = tmp_path / "objects"
+    key = "xml/point-in-time/2026-05-05/uksi/2004/1376/data.xml"
+    path = object_root / "legislation" / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"<Legislation>full</Legislation>")
+
+    class FakeCursor:
+        def fetchall(self) -> list[Any]:
+            return [("uksi/2004/1376", ["uksi", "2004", "1376"], "point_in_time", date(2026, 5, 5), key)]
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def execute(self, query: str, params: object = None) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            calls["committed"] = True
+
+    monkeypatch.setattr("git_legislation.cli.psycopg.connect", lambda _: FakeConnection())
+    monkeypatch.setattr("git_legislation.cli.render_document_markdown_from_xml", lambda content: "# Real text\n")
+    monkeypatch.setattr(
+        "git_legislation.cli.publish_document_text",
+        lambda *args, **kwargs: calls["published"].append(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "rerender-markdown",
+            "--dry-run",
+            "--database-url",
+            "postgres://example",
+            "--object-store-root",
+            str(object_root),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["published"] == []
+    assert "Scanned 1: 1 recoverable" in result.output

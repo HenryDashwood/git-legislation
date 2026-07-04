@@ -239,6 +239,131 @@ def ingest_point_in_time_corpus(
     typer.echo(render_publish_report(report))
 
 
+@app.command("rerender-markdown")
+def rerender_markdown_command(
+    at: Annotated[
+        str | None,
+        typer.Option("--at", help="Limit to a point-in-time snapshot date as YYYY-MM-DD."),
+    ] = None,
+    legislation_type: Annotated[
+        str | None,
+        typer.Option("--legislation-type", help="Limit to one legislation type code."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Process at most this many documents."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Count recoverable documents without publishing."),
+    ] = False,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Re-render metadata-only documents from stored XML with the current converter."""
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    metadata_marker = "Source XML contains metadata only"
+    scanned = recovered = still_metadata = missing_xml = render_failures = 0
+
+    filters = ["dv.is_metadata_only", "dv.version_kind in ('point_in_time', 'enacted')"]
+    params: list[Any] = []
+    if at is not None:
+        filters.append("dv.snapshot_date = %s")
+        params.append(at)
+    if legislation_type is not None:
+        filters.append("d.legislation_type = %s")
+        params.append(legislation_type)
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "limit %s"
+        params.append(limit)
+
+    with psycopg.connect(database_url) as connection:
+        rows = connection.execute(
+            f"""
+            select d.id, d.source_path, dv.version_kind, dv.snapshot_date, f.object_key
+            from documents d
+            join document_versions dv on dv.id = d.latest_version_id
+            join document_files f
+              on f.version_id = dv.id and f.file_kind = 'clml_xml' and f.object_key is not null
+            where {" and ".join(filters)}
+            order by d.id
+            {limit_clause}
+            """,  # noqa: S608 - filters are fixed SQL fragments; values are bound parameters
+            params,
+        ).fetchall()
+        typer.echo(f"Found {len(rows)} metadata-only documents with stored XML")
+
+        publish_runs: dict[tuple[str, str | None], int] = {}
+        for document_id, source_path, version_kind, snapshot_date, object_key in rows:
+            scanned += 1
+            xml_path = object_store.path_for_key(object_key)
+            if not xml_path.exists():
+                missing_xml += 1
+                continue
+            xml_content = xml_path.read_bytes()
+            try:
+                markdown = render_document_markdown_from_xml(xml_content)
+            except Exception as error:
+                render_failures += 1
+                typer.echo(f"Failed to render {document_id}: {error}")
+                continue
+            if metadata_marker in markdown:
+                still_metadata += 1
+                continue
+            recovered += 1
+            if dry_run:
+                continue
+
+            collection = "point-in-time" if version_kind == "point_in_time" else "enacted"
+            snapshot = snapshot_date.isoformat() if snapshot_date is not None else None
+            run_key = (collection, snapshot)
+            if run_key not in publish_runs:
+                publish_runs[run_key] = create_publish_run(
+                    connection,
+                    collection=collection,
+                    snapshot_date=snapshot,
+                    legislation_types=set(),
+                )
+            published_version = publish_document_text(
+                connection,
+                source_path=tuple(source_path),
+                xml_content=xml_content,
+                markdown=markdown,
+                collection=collection,
+                snapshot_date=snapshot,
+                object_store=object_store,
+            )
+            record_publish_observation(connection, publish_runs[run_key], published_version)
+            if recovered % 500 == 0:
+                connection.commit()
+                typer.echo(f"Re-rendered {recovered} documents ({scanned} of {len(rows)} scanned)")
+
+        for run_id in publish_runs.values():
+            finish_publish_run(connection, run_id)
+        connection.commit()
+
+    action = "recoverable" if dry_run else "recovered"
+    typer.echo(
+        f"Scanned {scanned}: {recovered} {action}, {still_metadata} still metadata-only, "
+        f"{missing_xml} missing XML, {render_failures} render failures"
+    )
+
+
 @app.command("corpus-counts")
 def corpus_counts(
     database_url: Annotated[
