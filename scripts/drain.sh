@@ -24,7 +24,7 @@ done
 log "bulk sync complete - drain loop starting"
 
 while true; do
-  for subtree in pdf reports; do
+  for subtree in pdf reports extracted-text; do
     src="var/object-store/legislation/$subtree"
     [[ -d "$src" ]] || continue
     moved=$(rclone move "$src" "r2:british-legislation/$subtree" \

@@ -106,49 +106,42 @@ Check corpus counts across Postgres and the local object store:
 uv run git-legislation corpus-counts
 ```
 
-## Read API
+## Serving (Cloudflare Workers)
 
-Run the read-only FastAPI service against the local Postgres database and object store:
+Python builds the corpus; TypeScript serves it. The two serving apps live under `workers/` and are deployed
+on Cloudflare Workers:
 
-```bash
-set -a; . ./.env; set +a
-uv run git-legislation-api
-```
+- `workers/read-api` — read-only JSON API. PlanetScale Postgres via Hyperdrive, content objects from the R2
+  bucket binding. Deployed at https://git-legislation-read-api.british-legislation.workers.dev
+- `workers/web-app` — HTMX web frontend rendered with Hono JSX, calling the read API over a service binding.
+  Deployed at https://git-legislation-web-app.british-legislation.workers.dev
 
-The service defaults to `http://127.0.0.1:8000`. Set `CORS_ORIGINS` in `.env` to allow a web app origin, for example:
+Each has its own README covering local dev (`npm run dev` runs both Workers against local Postgres and a
+simulated R2 bucket), tests, and deployment.
 
-```bash
-CORS_ORIGINS=http://localhost:5173
-```
-
-Useful v1 endpoints:
+Endpoints served by the read API:
 
 - `GET /healthz`
+- `GET /corpus/summary`
 - `GET /documents?legislation_type=ukpga&year=2026&number=14&status=Prospective&metadata_only=false&limit=50&offset=0`
-- `GET /documents/ukpga/2026/14`
-- `GET /documents/ukpga/2026/14/versions`
-- `GET /documents/ukpga/2026/14/versions/latest`
-- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/provisions`
-- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/files`
-- `GET /versions/point-in-time:2026-05-05:ukpga/2026/14/content`
-
-Metadata endpoints read from Postgres. Content endpoints resolve canonical Markdown or XML through database file records, then serve bytes from `var/object-store` (or redirect to R2, see below).
+- `GET /documents/ukpga/2026/14` (+ `/versions`, `/versions/latest`)
+- `GET /versions/{version_id}/provisions`, `/files`, `/content?kind=markdown|clml_xml`
+- `GET /files/{id}/content`
 
 ## Cloud Backends
 
 Local remains the build environment; PlanetScale Postgres and Cloudflare R2 are the serving copies.
 
-Database: the app is backend-agnostic — point `DB_URL` at the PlanetScale DSN. Schema is managed with the same
-goose migrations:
+Database schema is managed with the same goose migrations:
 
 ```bash
 goose -dir db/migrations postgres "$PSCALE_URL" up
 ```
 
-Populate (after a local ingestion/parsing run):
+Populate from local (uses the docker container's PG client tools; no DDL rights needed on the target):
 
 ```bash
-pg_dump --data-only -Fc "$LOCAL_DB_URL" | pg_restore --data-only -d "$PSCALE_URL"
+zsh scripts/load-planetscale.sh
 ```
 
 Objects: sync the local object store to R2 with rclone (idempotent; re-run to pick up deltas):
@@ -157,44 +150,14 @@ Objects: sync the local object store to R2 with rclone (idempotent; re-run to pi
 rclone sync var/object-store/legislation r2:british-legislation --transfers 16 --progress
 ```
 
-To serve API content from R2 instead of the local filesystem, set:
+`scripts/sync.sh` and `scripts/drain.sh` wrap this for bulk mirroring and for continuously moving
+write-once artifacts (PDFs, parse reports) to R2 while deleting verified local copies.
 
-```bash
-CONTENT_STORE_BACKEND=r2
-R2_URL=https://<account>.r2.cloudflarestorage.com/<bucket>   # or R2_ENDPOINT_URL + R2_BUCKET
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-```
-
-Content endpoints then respond with 307 redirects to short-lived presigned R2 URLs, so object bytes are served
-by Cloudflare rather than proxied through the API host.
-
-## Web App
-
-The HTMX web app lives in `web-app` and consumes the read API over HTTP. Run the API and web app as two local processes.
-
-Terminal 1:
-
-```bash
-set -a; . ./.env; set +a
-uv run git-legislation-api
-```
-
-Terminal 2:
-
-```bash
-API_BASE_URL=http://127.0.0.1:8000 uv run uvicorn main:app --app-dir web-app --reload --port 8001
-```
-
-Open `http://127.0.0.1:8001/documents` to browse documents, filter by legislation type, year, number, status, extent, text coverage, and title text. The document page renders parsed Markdown as readable HTML and, where available, shows the source PDF alongside it for comparison.
-
-To cache the PDF for a specific document into the local object store:
+To cache the PDF for a specific document into the object store:
 
 ```bash
 uv run git-legislation cache-pdf aosp/1469/12 --at 2026-05-05
 ```
-
-Once cached, the web app serves the PDF through the read API instead of depending on the remote source during page view.
 
 ## Data Model
 
