@@ -10,21 +10,27 @@ The working pipeline is:
 
 ```text
 legislation.gov.uk
-  -> var/object-store/... Markdown/XML objects
-  -> Postgres metadata/search tables
+  -> var/object-store/... Markdown/XML/PDF/extracted-text objects  (local build side)
+  -> local Postgres metadata/search tables
+  -> rclone sync/drain to Cloudflare R2 + data load to PlanetScale  (serving side)
+  -> Cloudflare Workers (read API + web app)
 ```
 
 Implemented pieces:
 
-- Python CLI for object-store-native ingestion, corpus inspection, and legislation.gov.uk discovery.
-- Local Postgres via Docker Compose.
-- Goose migrations under `db/migrations`.
-- Schema dump under `db/schema.sql`.
-- Local filesystem object store under `var/object-store`.
+- Python CLI for object-store-native ingestion, corpus inspection, PDF caching/parsing, and
+  legislation.gov.uk discovery. Python builds the corpus; TypeScript Workers serve it.
+- Local Postgres via Docker Compose; PlanetScale Postgres as the serving database.
+- Goose migrations under `db/migrations`; schema dump under `db/schema.sql`.
+- Filesystem object store under `var/object-store`, mirrored key-for-key to an R2 bucket.
 - Postgres publishing for documents, versions, provisions, file metadata, and object metadata.
-- Markdown publishing normalization for legacy CP-1252 punctuation found in some source metadata.
+- LiteParse PDF-to-text extraction for records with no digitised XML, served as
+  non-canonical Markdown alongside the source PDF.
+- Deployed read API and web app on Cloudflare Workers (see Serving below).
 
-The current broad snapshot can be ingested for configured non-draft legislation types. Some records are full-text CLML-derived Markdown; many older or metadata-only records are Markdown stubs pointing to PDF alternatives.
+The corpus holds a broad point-in-time snapshot across all configured non-draft legislation types.
+Most records carry full text (CLML-derived or PDF-derived); the residue is image-only scans queued
+for a future OCR pass.
 
 ## Local Setup
 
@@ -169,7 +175,7 @@ The core distinction is:
 - `storage_objects`: object-store entries for Markdown, XML, and later PDFs or extracted text.
 - `document_files`: links between documents, versions, source URLs, and stored objects.
 
-The object store is currently local filesystem storage. It is intended to mirror the shape of a future Cloudflare R2 bucket, so the application can later swap the storage backend without changing the database model.
+The local filesystem object store mirrors the Cloudflare R2 bucket key-for-key: local is the build-side working copy, R2 is the serving copy, and rclone moves objects between them without changing the database model.
 
 ## Source Data
 
@@ -196,23 +202,31 @@ Key assumptions:
 
 - Add a Markdown quality audit command.
 - Compare XML structure against Markdown output for full-text CLML records.
-- Flag missing schedules, weak headings, table-heavy documents, empty bodies, and metadata-only stubs.
+- Flag missing schedules, weak headings, table-heavy documents, and empty bodies.
 - Add representative snapshot tests across legislation types and eras.
 - Improve handling of schedules, tables, forms, images, commentary, repeals, and prospective text.
+- After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from stored XML.
 
-### Handle PDF-Backed Records
+### Text Coverage
 
-- Download/cache PDF alternatives into the object store.
+- Refetch as-made/enacted XML (the shell's `rel="self"` URL) for remaining metadata-only records where
+  `NumberOfProvisions > 0` upstream.
+- Run Marker on a GPU machine over the image-only PDF backlog (pre-Victorian acts, NI SR&Os) to replace
+  the LiteParse first-pass text; the reader already prefers `markdown/marker/` objects.
 - Extract richer metadata from metadata-only XML.
-- Evaluate PDF text extraction quality on a sample set.
-- Decide how PDF-derived text should be marked, reviewed, and served.
+- Decide whether PDF-derived text should feed versions/search or remain display-only.
+
+### Corpus Operations
+
+- Delta-load new rows (document_files, storage_objects, provisions) from local to PlanetScale after
+  pipeline runs; the current load script only handles the empty-database case.
+- Add an `export-sample` command producing a small representative local fixture (rows + objects), then
+  prune local trees to the sample.
 
 ### Extend The Read API
 
 - Add snapshot-scoped browse routes and richer search over titles/provisions.
-- Add a Cloudflare Worker or other lightweight hosted backend for read-only access.
-- Add range requests or signed object access for large XML/PDF content.
-- Add `sqlc` or another query-generation layer once the API query surface is stable.
+- Add `sqlc`-style typed query generation to the Worker once the query surface is stable.
 
 ### Incremental Updates
 
