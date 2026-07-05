@@ -13,6 +13,8 @@ const DOCUMENT_COLUMNS = `
   d.document_uri,
   d.status,
   d.extent,
+  d.legal_date,
+  d.legal_date_kind,
   d.latest_version_id,
   d.created_at,
   d.updated_at
@@ -36,9 +38,21 @@ export class PostgresRepository implements Repository {
 
   async listDocuments(filters: DocumentListFilters): Promise<Row[]> {
     const sql = this.sql;
+    // "newest" is legal chronology: made date for instruments, Royal Assent
+    // for Acts. Undated documents (metadata-only shells) fall back to the
+    // start of their year, then sort by number — numeric, not int: ukmo
+    // documents use 13-digit ISBNs as their number.
+    const orderBy =
+      filters.sort === "newest"
+        ? `coalesce(d.legal_date, make_date(d.calendar_year, 1, 1)) desc nulls last,
+           case when d.number ~ '^[0-9]+$' then d.number::numeric end desc nulls last,
+           d.id desc`
+        : "d.calendar_year nulls last, d.legislation_type, d.number, d.id";
     return await sql.unsafe(
       `
-      select ${DOCUMENT_COLUMNS}
+      select ${DOCUMENT_COLUMNS},
+        latest_dv.word_count as latest_word_count,
+        latest_dv.is_metadata_only as latest_is_metadata_only
       from documents d
       left join document_versions latest_dv on latest_dv.id = d.latest_version_id
       where 1 = 1
@@ -49,7 +63,7 @@ export class PostgresRepository implements Repository {
         and ($5::text is null or d.extent = $5)
         and ($6::boolean is null or latest_dv.is_metadata_only = $6)
         and ($7::text is null or d.title ilike '%' || $7 || '%')
-      order by d.calendar_year nulls last, d.legislation_type, d.number, d.id
+      order by ${orderBy}
       limit $8 offset $9
       `,
       [
@@ -84,7 +98,7 @@ export class PostgresRepository implements Repository {
       `
       select
         id, legislation_type, year, calendar_year, number, title, document_uri,
-        status, extent, latest_version_id, created_at, updated_at
+        status, extent, legal_date, legal_date_kind, latest_version_id, created_at, updated_at
       from documents
       where id = $1
       `,

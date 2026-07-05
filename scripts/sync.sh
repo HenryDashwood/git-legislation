@@ -1,6 +1,10 @@
 #!/bin/zsh
-# Mirror the local object store to the R2 bucket. Idempotent: re-run to pick
-# up files produced after the previous pass (e.g. by the liteparse sweep).
+# Sync build-side object trees to R2.
+#
+# IMPORTANT: only the trees that stay resident locally (markdown, xml) may use
+# `rclone sync`. The drained trees (pdf, reports, extracted-text) are moved to
+# R2 and DELETED locally by drain.sh - a full-tree sync would interpret those
+# deletions as intent and remove the objects from R2.
 set -u
 cd /Users/henrydashwood/git-legislation
 source .envrc
@@ -12,12 +16,10 @@ export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY
 export RCLONE_CONFIG_R2_ENDPOINT="${R2_URL%/*}"
 export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
 
-echo "[$(date '+%F %T')] R2 sync starting"
-rclone sync var/object-store/legislation r2:british-legislation \
-  --transfers 16 \
-  --checkers 32 \
-  --stats 5m \
-  --stats-one-line \
-  --log-level NOTICE
-rc=$?
-echo "[$(date '+%F %T')] R2 SYNC COMPLETE rc=$rc"
+echo "[$(date '+%F %T')] syncing markdown and xml trees to R2"
+for subtree in markdown xml; do
+  rclone sync "var/object-store/legislation/$subtree" "r2:british-legislation/$subtree" \
+    --transfers 16 --checkers 32 --log-level ERROR
+  echo "[$(date '+%F %T')] $subtree synced"
+done
+echo "[$(date '+%F %T')] MARKDOWN+XML SYNC COMPLETE"

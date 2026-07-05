@@ -139,6 +139,7 @@ describe("read api worker", () => {
       q: "exports",
       limit: 25,
       offset: 50,
+      sort: "default",
     });
   });
 
@@ -249,3 +250,15 @@ describe("read api worker", () => {
     expect((await app.request("/versions/enacted:nope", {}, testEnv)).status).toBe(404);
   });
 });
+
+  it("passes sort=newest through to the repository and rejects unknown sorts", async () => {
+    const repository = new FakeRepository();
+    const app = appWith(repository);
+
+    const ok = await app.request("/documents?sort=newest&limit=50", {}, testEnv);
+    expect(ok.status).toBe(200);
+    expect((repository.calls["listDocuments"] as { sort?: string }).sort).toBe("newest");
+
+    const bad = await app.request("/documents?sort=oldest", {}, testEnv);
+    expect(bad.status).toBe(422);
+  });

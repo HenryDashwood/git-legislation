@@ -394,6 +394,130 @@ def corpus_counts(
     typer.echo(render_corpus_counts(counts))
 
 
+@app.command("extract-legal-dates")
+def extract_legal_dates_command(
+    limit: Annotated[int | None, typer.Option("--limit", help="Process at most this many documents.")] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Backfill documents.legal_date from stored CLML XML.
+
+    Instruments carry <ukm:Made Date=...>, Acts carry <ukm:EnactmentDate Date=...>.
+    Idempotent: re-run after ingestion to date newly published documents.
+    """
+    import re
+
+    database_url = _database_url_or_raise(database_url)
+    bucket_root = object_store_root / object_store_bucket
+    date_pattern = re.compile(rb'<ukm:(Made|EnactmentDate)[^>]*\sDate="(\d{4}-\d{2}-\d{2})"')
+
+    scanned = dated = missing_xml = no_date = implausible = 0
+    with psycopg.connect(database_url) as connection:
+        rows = connection.execute(
+            f"""
+            select d.id, d.calendar_year, df.object_key
+            from documents d
+            join document_files df on df.version_id = d.latest_version_id and df.file_kind = 'clml_xml'
+            where d.legal_date is null and df.object_key is not null
+            order by d.id
+            {"limit %s" if limit is not None else ""}
+            """,
+            (limit,) if limit is not None else (),
+        ).fetchall()
+        typer.echo(f"Found {len(rows)} undated documents with stored XML")
+        for document_id, calendar_year, object_key in rows:
+            scanned += 1
+            xml_path = bucket_root / object_key
+            if not xml_path.exists():
+                missing_xml += 1
+                continue
+            match = date_pattern.search(xml_path.read_bytes())
+            if match is None:
+                no_date += 1
+                continue
+            legal_date = match.group(2).decode()
+            # Source CLML contains occasional OCR/data-entry errors ("2950");
+            # a legal date should sit within a couple of years of the series year.
+            if calendar_year is not None and abs(int(legal_date[:4]) - calendar_year) > 2:
+                implausible += 1
+                continue
+            kind = "made" if match.group(1) == b"Made" else "enacted"
+            connection.execute(
+                "update documents set legal_date = %s, legal_date_kind = %s where id = %s",
+                (legal_date, kind, document_id),
+            )
+            dated += 1
+            if dated % 20000 == 0:
+                connection.commit()
+                typer.echo(f"Dated {dated} of {scanned} scanned...")
+        connection.commit()
+        typer.echo(
+            f"XML pass - scanned {scanned}: dated {dated}, no date in XML {no_date}, "
+            f"implausible {implausible}, missing XML {missing_xml}"
+        )
+
+        # Second pass: PDF-backed instruments print their made date in the
+        # preamble ("Made - - 28th April 2026"); recover it from LiteParse
+        # text. OCR often clips the left margin, so tolerate a missing "M".
+        text_pattern = re.compile(
+            r"\b[Mm]?ade\b[\s.\-–—]{0,30}(\d{1,2})(?:st|nd|rd|th)?\s+"
+            r"(January|February|March|April|May|June|July|August|September|October|November|December),?\s+(\d{4})"
+        )
+        months = {
+            month: index + 1
+            for index, month in enumerate(
+                "January February March April May June July August September October November December".split()
+            )
+        }
+        text_rows = connection.execute(
+            f"""
+            select d.id, d.calendar_year, df.object_key
+            from documents d
+            join document_files df on df.version_id = d.latest_version_id and df.file_kind = 'markdown'
+            where d.legal_date is null and df.object_key like 'markdown/liteparse/%%'
+            order by d.id
+            {"limit %s" if limit is not None else ""}
+            """,
+            (limit,) if limit is not None else (),
+        ).fetchall()
+        text_dated = text_scanned = 0
+        for document_id, calendar_year, object_key in text_rows:
+            text_scanned += 1
+            markdown_path = bucket_root / object_key
+            if not markdown_path.exists():
+                continue
+            match = text_pattern.search(markdown_path.read_text(errors="replace")[:6000])
+            if match is None:
+                continue
+            year_value = int(match.group(3))
+            if calendar_year is not None and abs(year_value - calendar_year) > 2:
+                continue
+            try:
+                legal_date = date(year_value, months[match.group(2)], int(match.group(1))).isoformat()
+            except ValueError:
+                continue
+            connection.execute(
+                "update documents set legal_date = %s, legal_date_kind = 'made' where id = %s",
+                (legal_date, document_id),
+            )
+            text_dated += 1
+        connection.commit()
+    typer.echo(f"PDF-text pass - scanned {text_scanned}: dated {text_dated}")
+
+
 @app.command("cache-dynamic-pdfs")
 def cache_dynamic_pdfs_command(
     legislation_type: Annotated[

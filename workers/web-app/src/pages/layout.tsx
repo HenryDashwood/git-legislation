@@ -19,6 +19,9 @@ export function Layout(props: { title: string; pageClass?: string; children: Chi
             <a href="/documents" class="brand">
               git<span class="brand-dash">&#8211;</span>legislation
             </a>
+            <nav class="masthead-nav" aria-label="Primary">
+              <a href="/recent">Recent</a>
+            </nav>
             <span class="masthead-note">United Kingdom legislation corpus</span>
           </div>
         </header>

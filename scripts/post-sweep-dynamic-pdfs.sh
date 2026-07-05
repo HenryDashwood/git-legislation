@@ -1,7 +1,7 @@
 #!/bin/zsh
-# After the liteparse sweep completes, cache the remaining dynamic-only PDFs
-# (the class legislation.gov.uk refuses to serve to Cloudflare Workers) from
-# local egress. The drain loop ships them to R2 as they land.
+# After the liteparse sweep completes: cache dynamic-only PDFs (the class
+# legislation.gov.uk refuses to serve to Cloudflare Workers), then run the
+# full catch-up (current-year ingestion, legal dates, R2 + PlanetScale sync).
 set -u
 export DB_URL="postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
 cd /Users/henrydashwood/git-legislation
@@ -26,3 +26,7 @@ while (( iters < 100 )); do
   fi
 done
 log "DYNAMIC PDF CACHING COMPLETE"
+
+log "running full catch-up"
+zsh scripts/catch-up.sh
+log "POST-SWEEP TASKS COMPLETE"

@@ -8,6 +8,7 @@ import { buildTimeline } from "./timeline";
 import { DetailPage } from "./pages/detail";
 import { LandingPage } from "./pages/landing";
 import { ContentPartial, FilesPartial, ProvisionsPartial } from "./pages/partials";
+import { FEED_PAGE_SIZE, FeedItems, RecentPage } from "./pages/recent";
 import { Results, SearchPage } from "./pages/search";
 
 type Variables = { api: ReadApiClient };
@@ -27,17 +28,31 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
     const api = c.get("api");
 
     if (!params.searched) {
-      let summaryItems: Json[] | null = null;
-      try {
-        summaryItems = ((await api.getCorpusSummary())["items"] ?? []) as Json[];
-      } catch {
-        summaryItems = null;
-      }
-      return c.html(<LandingPage timeline={buildTimeline(summaryItems)} />);
+      const [summaryItems, recent] = await Promise.all([
+        api
+          .getCorpusSummary()
+          .then((summary) => (summary["items"] ?? []) as Json[])
+          .catch(() => null),
+        fetchFeedPage(api, 0, 5).then((feed) => feed.documents),
+      ]);
+      return c.html(<LandingPage timeline={buildTimeline(summaryItems)} recent={recent} />);
     }
 
     const results = await fetchResults(api, params.apiParams, params.limit, params.offset);
     return c.html(<SearchPage filters={buildFilters(params.apiParams)} results={results} />);
+  });
+
+  app.get("/recent", async (c) => {
+    const feed = await fetchFeedPage(c.get("api"), 0);
+    return c.html(<RecentPage documents={feed.documents} error={feed.error} />);
+  });
+
+  // Infinite-scroll continuation: HTMX swaps this in when the sentinel row
+  // scrolls into view.
+  app.get("/recent/items", async (c) => {
+    const offset = Math.max(Number(c.req.query("offset") ?? 0) || 0, 0);
+    const feed = await fetchFeedPage(c.get("api"), offset);
+    return c.html(<FeedItems documents={feed.documents} offset={offset} error={feed.error} />);
   });
 
   // HTMX partial used by older clients; kept for parity with the Python app.
@@ -133,6 +148,20 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
   });
 
   return app;
+}
+
+async function fetchFeedPage(api: ReadApiClient, offset: number, limit: number = FEED_PAGE_SIZE) {
+  const params = new URLSearchParams({
+    sort: "newest",
+    limit: String(limit),
+    offset: String(offset),
+  });
+  try {
+    const response = await api.listDocuments(params);
+    return { documents: (response["items"] ?? []) as Json[], error: null };
+  } catch (error) {
+    return { documents: [], error: String(error) };
+  }
 }
 
 async function fetchResults(

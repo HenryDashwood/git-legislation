@@ -1,8 +1,10 @@
 import { SERIES } from "../legislation";
+import type { Json } from "../api";
 import type { Timeline } from "../timeline";
 import { Layout } from "./layout";
+import { FeedRow } from "./recent";
 
-export function LandingPage(props: { timeline: Timeline }) {
+export function LandingPage(props: { timeline: Timeline; recent: Json[] }) {
   const { timeline } = props;
   return (
     <Layout title="git-legislation — the statute book, under version control">
@@ -84,6 +86,20 @@ export function LandingPage(props: { timeline: Timeline }) {
             </p>
           </form>
         </section>
+
+        {props.recent.length > 0 ? (
+          <section class="recent-section">
+            <h2 class="section-title">Recently made</h2>
+            <ul class="result-list recent-preview">
+              {props.recent.map((document) => (
+                <FeedRow document={document} />
+              ))}
+            </ul>
+            <p class="recent-more">
+              <a href="/recent">Browse the full feed, newest to oldest &rsaquo;</a>
+            </p>
+          </section>
+        ) : null}
 
         <section class="timeline-section">
           <h2 class="section-title">Eight centuries of law</h2>

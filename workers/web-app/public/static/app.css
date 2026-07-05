@@ -919,3 +919,49 @@ a.timeline-row:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- Masthead nav and the recent-legislation feed ---------- */
+
+.masthead-nav {
+  flex: 1 1 auto;
+}
+
+.masthead-nav a {
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-underline-offset: 0.25em;
+}
+
+.feed-lede {
+  margin-bottom: 1.5rem;
+}
+
+.feed-list {
+  max-width: 46rem;
+}
+
+.feed-sentinel,
+.feed-end {
+  padding: 1rem 0;
+  border-bottom: 0;
+  list-style: none;
+}
+
+.recent-section {
+  padding-bottom: 2.5rem;
+}
+
+.recent-preview {
+  max-width: 46rem;
+}
+
+.recent-more {
+  margin: 1rem 0 0;
+  font-weight: 700;
+}
+
+.result-date {
+  color: var(--ink);
+  font-weight: 700;
+}

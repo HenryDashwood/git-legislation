@@ -69,6 +69,10 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
     if (metadataOnly === undefined) {
       return c.json({ detail: "metadata_only must be a boolean" }, 422);
     }
+    const sort = query["sort"] ?? "default";
+    if (sort !== "default" && sort !== "newest") {
+      return c.json({ detail: "sort must be default or newest" }, 422);
+    }
     const items = await c.get("repository").listDocuments({
       legislationType,
       year,
@@ -79,6 +83,7 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
       q: query["q"] ?? null,
       limit,
       offset,
+      sort,
     });
     return c.json({ items, limit, offset });
   });

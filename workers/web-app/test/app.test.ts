@@ -13,6 +13,10 @@ const DOCUMENT = {
   status: "Prospective",
   extent: "E+W+S+N.I.",
   latest_version_id: "point-in-time:2026-05-05:ukpga/2026/14",
+  latest_word_count: 1234,
+  latest_is_metadata_only: false,
+  legal_date: "2026-04-29",
+  legal_date_kind: "enacted",
 };
 
 const VERSION = {
@@ -105,7 +109,12 @@ describe("web app worker", () => {
     expect(html).toContain("11,723 documents");
     expect(html).toContain("UK Public General Acts");
     expect(html).toContain("Eight centuries of law");
-    expect(html).not.toContain("Industry and Exports");
+    expect(html).toContain("Recently made");
+    expect(html).toContain("Industry and Exports");
+    expect(html).toContain("Full text, 1,234 words");
+    expect(html).toContain("Royal Assent 29 April 2026");
+    expect(html).toContain('href="/recent"');
+    expect(html).not.toContain("Apply filters");
   });
 
   it("renders the landing page even when the summary endpoint fails", async () => {
@@ -298,3 +307,55 @@ describe("pdf proxy fallbacks", () => {
       globalThis.fetch = realFetch;
     }
   }, 10000);
+
+  it("renders the recent feed with an infinite-scroll sentinel", async () => {
+    const app = createApp();
+    const fifty = Array.from({ length: 50 }, (_, index) => ({
+      ...DOCUMENT,
+      id: `uksi/2026/${900 - index}`,
+      number: String(900 - index),
+      legislation_type: "uksi",
+      title: `The Example Regulations (No. ${900 - index}) 2026`,
+    }));
+    const fetcher = fakeApiFetcher({
+      "/documents": () => Response.json({ items: fifty, limit: 50, offset: 0 }),
+    });
+    const response = await app.request("/recent", {}, envWith(fetcher), executionCtx);
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain("Recent legislation");
+    expect(html).toContain("The Example Regulations (No. 900) 2026");
+    expect(html).toContain('hx-get="/recent/items?offset=50"');
+    expect(html).toContain('hx-trigger="revealed"');
+  });
+
+  it("ends the feed when a short page comes back", async () => {
+    const app = createApp();
+    const fetcher = fakeApiFetcher({
+      "/documents": () => Response.json({ items: [DOCUMENT], limit: 50, offset: 184550 }),
+    });
+    const response = await app.request("/recent/items?offset=184550", {}, envWith(fetcher), executionCtx);
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).not.toContain("hx-trigger");
+    expect(html).toContain("beginning of the corpus");
+  });
+
+  it("decodes only the extent codes actually present", async () => {
+    const { extentInWords } = await import("../src/pages/detail");
+    expect(extentInWords("E+W+S")).toBe("England, Wales and Scotland");
+    expect(extentInWords("E+W+S+N.I.")).toBe("England, Wales, Scotland and Northern Ireland");
+    expect(extentInWords("S")).toBe("Scotland");
+    expect(extentInWords("E+W+X")).toBeNull();
+
+    const app = createApp();
+    const response = await app.request(
+      "/documents/ukpga/2026/14",
+      {},
+      envWith(fakeApiFetcher()),
+      executionCtx,
+    );
+    const html = await response.text();
+    expect(html).toContain("(England, Wales, Scotland and Northern Ireland)");
+    expect(html).not.toContain("N.I. Northern Ireland)");
+  });

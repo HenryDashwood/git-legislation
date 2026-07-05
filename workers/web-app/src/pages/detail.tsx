@@ -1,6 +1,7 @@
 import { TYPE_LABELS, citation, CHAPTER_CITED_TYPES } from "../legislation";
 import type { Json } from "../api";
 import { Layout } from "./layout";
+import { legalDateLabel } from "./recent";
 
 export interface DetailProps {
   document: Json | null;
@@ -56,6 +57,12 @@ export function DetailPage(props: DetailProps) {
             <dt>Citation</dt>
             <dd>{citation(legislationType, document["year"], document["number"])}</dd>
           </div>
+          {legalDateLabel(document) !== null ? (
+            <div class="summary-row">
+              <dt>{document["legal_date_kind"] === "enacted" ? "Royal Assent" : "Made"}</dt>
+              <dd>{legalDateLabel(document)?.replace(/^(Royal Assent|Made) /, "")}</dd>
+            </div>
+          ) : null}
           {document["status"] ? (
             <div class="summary-row">
               <dt>Status</dt>
@@ -66,10 +73,13 @@ export function DetailPage(props: DetailProps) {
             <div class="summary-row">
               <dt>Extent</dt>
               <dd>
-                {document["extent"]}{" "}
-                <span class="field-help">
-                  (E England, W Wales, S Scotland, N.I. Northern Ireland)
-                </span>
+                {document["extent"]}
+                {extentInWords(String(document["extent"])) !== null ? (
+                  <>
+                    {" "}
+                    <span class="field-help">({extentInWords(String(document["extent"]))})</span>
+                  </>
+                ) : null}
               </dd>
             </div>
           ) : null}
@@ -178,6 +188,25 @@ export function DetailPage(props: DetailProps) {
       </section>
     </Layout>
   );
+}
+
+const EXTENT_NAMES: Record<string, string> = {
+  E: "England",
+  W: "Wales",
+  S: "Scotland",
+  "N.I.": "Northern Ireland",
+};
+
+/** "E+W+S" -> "England, Wales and Scotland"; null when any code is unknown. */
+export function extentInWords(extent: string): string | null {
+  const names = extent.split("+").map((code) => EXTENT_NAMES[code.trim()]);
+  if (names.length === 0 || names.some((name) => name === undefined)) {
+    return null;
+  }
+  if (names.length === 1) {
+    return names[0] ?? null;
+  }
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 export { CHAPTER_CITED_TYPES };

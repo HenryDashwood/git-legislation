@@ -37,6 +37,7 @@ export interface DocumentListFilters {
   q: string | null;
   limit: number;
   offset: number;
+  sort?: "default" | "newest";
 }
 
 export type Row = Record<string, unknown>;

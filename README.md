@@ -214,12 +214,18 @@ Key assumptions:
 - Run Marker on a GPU machine over the image-only PDF backlog (pre-Victorian acts, NI SR&Os) to replace
   the LiteParse first-pass text; the reader already prefers `markdown/marker/` objects.
 - Extract richer metadata from metadata-only XML.
+- Fold legal-date extraction into the publish pipeline so newly ingested documents are dated
+  automatically (today `extract-legal-dates` must be re-run after ingestion; it is idempotent).
 - Decide whether PDF-derived text should feed versions/search or remain display-only.
 
 ### Corpus Operations
 
-- Delta-load new rows (document_files, storage_objects, provisions) from local to PlanetScale after
-  pipeline runs; the current load script only handles the empty-database case.
+- `scripts/catch-up.sh` picks up newly published legislation: re-enumerates the current year for
+  every active series (idempotent, content-addressed), extracts legal dates, syncs objects to R2,
+  and delta-syncs rows to PlanetScale (`scripts/delta-sync-planetscale.sh`). Run it weekly until
+  Publication Log polling exists.
+- Normalise dated URIs out of version content hashes: CLML embeds the request date, so re-fetching
+  an unchanged document under a new `--at` creates a new version ("reused 0") on every catch-up.
 - Add an `export-sample` command producing a small representative local fixture (rows + objects), then
   prune local trees to the sample.
 
