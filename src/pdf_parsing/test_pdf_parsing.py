@@ -416,3 +416,13 @@ def test_ensure_pdf_cached_waits_out_202_generation(monkeypatch, tmp_path: Path)
     assert client.calls == 3
     assert sleep_calls == [5.0, 5.0]
     assert object_store.path_for_key(pdf_object.key).read_bytes() == b"%PDF-1.4 generated"
+
+
+def test_permanent_pdf_failure_classifier() -> None:
+    from pdf_parsing import _is_permanent_pdf_failure
+
+    assert _is_permanent_pdf_failure(ValueError("Response from https://x is not a PDF"))
+    assert _is_permanent_pdf_failure(Exception("HTTP status 404 for https://x"))
+    assert not _is_permanent_pdf_failure(Exception("HTTP status 432 for https://x"))
+    assert not _is_permanent_pdf_failure(Exception("HTTP status 429 for https://x"))
+    assert not _is_permanent_pdf_failure(TimeoutError("timed out"))

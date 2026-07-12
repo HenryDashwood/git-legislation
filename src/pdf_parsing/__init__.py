@@ -135,10 +135,47 @@ def parse_pdf_sample(
             )
         except Exception as error:
             report.failures.append(f"{candidate.document_id} {candidate.source_url}: {error}")
+            if _is_permanent_pdf_failure(error):
+                _record_pdf_failure(connection, candidate.document_file_id)
             continue
         report.parsed += 1
         report.artifacts.append(artifacts)
     return report
+
+
+def _is_permanent_pdf_failure(error: Exception) -> bool:
+    """Missing or non-PDF upstream responses never heal; rate limits and
+    connection problems do, so those stay retryable."""
+    message = str(error)
+    return "not a PDF" in message or "status 404" in message
+
+
+def _ensure_pdf_failures_table(connection: Any) -> None:
+    # Operational scratch table (not schema-managed): keeps permanently
+    # failing candidates from riding along in every subsequent batch.
+    connection.execute(
+        """
+        create table if not exists pdf_fetch_failures (
+            document_file_id bigint primary key,
+            attempts integer not null default 0,
+            last_attempt timestamptz not null default now()
+        )
+        """,
+        (),
+    )
+
+
+def _record_pdf_failure(connection: Any, document_file_id: int) -> None:
+    _ensure_pdf_failures_table(connection)
+    connection.execute(
+        """
+        insert into pdf_fetch_failures (document_file_id, attempts)
+        values (%s, 1)
+        on conflict (document_file_id) do update
+        set attempts = pdf_fetch_failures.attempts + 1, last_attempt = now()
+        """,
+        (document_file_id,),
+    )
 
 
 def normalize_liteparse_markdown_sample(
@@ -277,7 +314,20 @@ def select_pdf_parse_candidates(
     only_metadata: bool,
     force: bool,
 ) -> tuple[PdfParseCandidate, ...]:
-    clauses = ["df.file_kind = 'pdf'", "df.source_url is not null", "df.version_id is not null"]
+    _ensure_pdf_failures_table(connection)
+    clauses = [
+        "df.file_kind = 'pdf'",
+        "df.source_url is not null",
+        "df.version_id is not null",
+        # Skip candidates that have permanently failed 3+ times (missing or
+        # non-PDF upstream); tracked in the pdf_fetch_failures scratch table.
+        """
+        not exists (
+            select 1 from pdf_fetch_failures pf
+            where pf.document_file_id = df.id and pf.attempts >= 3
+        )
+        """,
+    ]
     params: list[Any] = []
     if at is not None:
         clauses.append("dv.snapshot_date = %s")
@@ -500,10 +550,17 @@ def select_dynamic_only_pdf_candidates(
     """Latest-version PDF rows whose document has no print-version (/pdfs/) URL
     and no cached object — the class legislation.gov.uk refuses to serve to
     Cloudflare Workers, so they must be cached from local egress."""
+    _ensure_pdf_failures_table(connection)
     clauses = [
         "df.file_kind = 'pdf'",
         "df.source_url is not null",
         "df.object_key is null",
+        """
+        not exists (
+            select 1 from pdf_fetch_failures pf
+            where pf.document_file_id = df.id and pf.attempts >= 3
+        )
+        """,
         """
         not exists (
             select 1 from document_files o
@@ -575,6 +632,8 @@ def cache_dynamic_only_pdfs(
             ensure_pdf_cached(connection, candidate, client=client, object_store=object_store)
         except Exception as error:
             report.failures.append(f"{candidate.document_id} {candidate.source_url}: {error}")
+            if _is_permanent_pdf_failure(error):
+                _record_pdf_failure(connection, candidate.document_file_id)
             continue
         report.cached += 1
     return report

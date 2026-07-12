@@ -33,9 +33,16 @@ for t in "${TYPES[@]}"; do
     log "$t parse[$iters]: $summary"
     uv run git-legislation normalize-liteparse-markdown-sample --limit $BATCH "${type_args[@]}" > /dev/null 2>&1
     if [[ -n "${batch_failures:-}" && "$batch_failures" -ge "$FAILURE_CIRCUIT_THRESHOLD" ]]; then
-      log "$t: $batch_failures failures in one batch - likely rate limited; pausing ${RATE_LIMIT_PAUSE_SECONDS}s"
-      sleep $RATE_LIMIT_PAUSE_SECONDS
-      continue
+      # Verify before pausing: a healthy probe means the failures are
+      # broken documents (handled by 3-strike exclusion), not a rate limit.
+      probe=$(curl -s -m 15 -A 'git-legislation/0.1' -o /dev/null -w '%{http_code}' 'https://www.legislation.gov.uk/ukla/1932/37/pdfs/ukla_19320037_en.pdf')
+      if [[ "$probe" == "200" ]]; then
+        log "$t: $batch_failures failures but upstream healthy (probe 200) - continuing"
+      else
+        log "$t: $batch_failures failures and probe returned $probe - rate limited; pausing ${RATE_LIMIT_PAUSE_SECONDS}s"
+        sleep $RATE_LIMIT_PAUSE_SECONDS
+        continue
+      fi
     fi
     scanned=$(print -r -- "$out" | grep -o 'Scanned [0-9]* candidate' | head -1 | grep -o '[0-9]*' | head -1)
     if [[ -z "${scanned:-}" || "$scanned" -lt "$BATCH" ]]; then
