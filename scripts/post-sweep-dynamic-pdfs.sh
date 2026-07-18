@@ -3,7 +3,7 @@
 # legislation.gov.uk refuses to serve to Cloudflare Workers), then run the
 # full catch-up (current-year ingestion, legal dates, R2 + PlanetScale sync).
 set -u
-export DB_URL="postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
+export DB_URL="postgres://postgres:postgres@localhost:5433/british_legislation?sslmode=disable"
 cd /Users/henrydashwood/git-legislation
 
 BATCH=500

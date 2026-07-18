@@ -198,55 +198,92 @@ Key assumptions:
 
 ## Roadmap
 
-### Improve Markdown Quality
+The project has two data axes — **depth** (multiple textual states per document over time, diffable)
+and **breadth** (more sources, and the graph of effects and powers linking them) — plus a product
+surface (search, browse, API) that rides along every phase rather than competing with them. The
+sequencing below follows the dependencies: version identity must be trustworthy before diffs mean
+anything, diffs must prove their value on a pilot before a full historical backfill, and the
+effects/powers layer is the hinge that turns diffs into a power graph.
 
-- Add a Markdown quality audit command.
-- Compare XML structure against Markdown output for full-text CLML records.
-- Flag missing schedules, weak headings, table-heavy documents, and empty bodies.
-- Add representative snapshot tests across legislation types and eras.
-- Improve handling of schedules, tables, forms, images, commentary, repeals, and prospective text.
-- After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from stored XML.
+### Phase 1 — Live Corpus
 
-### Text Coverage
+Goal: a weekly run produces only real changes. This is the foundation of everything downstream.
 
-- Refetch as-made/enacted XML (the shell's `rel="self"` URL) for remaining metadata-only records where
-  `NumberOfProvisions > 0` upstream.
-- Run Marker on a GPU machine over the image-only PDF backlog (pre-Victorian acts, NI SR&Os) to replace
-  the LiteParse first-pass text; the reader already prefers `markdown/marker/` objects.
-- Extract richer metadata from metadata-only XML.
-- Fold legal-date extraction into the publish pipeline so newly ingested documents are dated
-  automatically (today `extract-legal-dates` must be re-run after ingestion; it is idempotent).
-- Decide whether PDF-derived text should feed versions/search or remain display-only.
+- **Normalise dated URIs out of version content hashes** (blocking prerequisite for all diff work):
+  CLML embeds the request date, so re-fetching an unchanged document under a new `--at` creates a
+  fake new version ("reused 0") on every catch-up. Until fixed, a real change cannot be
+  distinguished from ingestion noise.
+- Poll the Publication Log; track the last processed publication event; fetch and publish new or
+  republished XML. Until then, run `scripts/catch-up.sh` weekly (re-enumerates the current year for
+  every active series, extracts legal dates, syncs objects to R2, delta-syncs rows to PlanetScale
+  via `scripts/delta-sync-planetscale.sh`).
+- Finish the text-coverage backlog:
+  - Refetch as-made/enacted XML (the shell's `rel="self"` URL) for remaining metadata-only records
+    where `NumberOfProvisions > 0` upstream.
+  - Run Marker on a GPU machine over the image-only PDF backlog (pre-Victorian acts, NI SR&Os) to
+    replace the LiteParse first-pass text; the reader already prefers `markdown/marker/` objects.
+  - Extract richer metadata from metadata-only XML.
+  - Fold legal-date extraction into the publish pipeline so newly ingested documents are dated
+    automatically (today `extract-legal-dates` must be re-run after ingestion; it is idempotent).
+  - Decide whether PDF-derived text should feed versions/search or remain display-only.
 
-### Corpus Operations
+### Phase 2 — Diff Pilot (decision gate)
 
-- `scripts/catch-up.sh` picks up newly published legislation: re-enumerates the current year for
-  every active series (idempotent, content-addressed), extracts legal dates, syncs objects to R2,
-  and delta-syncs rows to PlanetScale (`scripts/delta-sync-planetscale.sh`). Run it weekly until
-  Publication Log polling exists.
-- Normalise dated URIs out of version content hashes: CLML embeds the request date, so re-fetching
-  an unchanged document under a new `--at` creates a new version ("reused 0") on every catch-up.
-- Add an `export-sample` command producing a small representative local fixture (rows + objects), then
-  prune local trees to the sample.
+Goal: prove the diff experience beats legislation.gov.uk's before paying for a full historical
+backfill. Point-in-time versions exist upstream mainly for revised legislation (deep for primary
+legislation, thin for most secondary), so historic coverage is patchy by construction — pilot first.
 
-### Extend The Read API
+- Backfill all available point-in-time versions for ~30 heavily amended acts (Immigration Act 1971,
+  Companies Act 2006, that class).
+- Provision-level diff rendering in the web app: align section against section, not page against
+  page, building on the `provisions` table.
+- Changesets, not timelines: render one amending instrument as a single changeset touching many
+  documents — the genuinely novel view nobody else offers.
+- Attach effects records to changesets as annotations ("commit messages": which instrument made the
+  change, commencement dates).
+- Markdown quality work, since a noisy converter means noisy diffs:
+  - Add a Markdown quality audit command; compare XML structure against Markdown output for
+    full-text CLML records; flag missing schedules, weak headings, table-heavy documents, and
+    empty bodies.
+  - Add representative snapshot tests across legislation types and eras.
+  - Improve handling of schedules, tables, forms, images, commentary, repeals, and prospective text.
+  - After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from
+    stored XML.
 
-- Add snapshot-scoped browse routes and richer search over titles/provisions.
-- Add `sqlc`-style typed query generation to the Worker once the query surface is stable.
+Gate: if the pilot experience clearly beats legislation.gov.uk, expand the version backfill; if
+not, stop having spent weeks, not a re-architecture.
 
-### Incremental Updates
+### Contingent on the pilot: Git Repository Rendering
 
-- Poll the Publication Log.
-- Track the last processed publication event.
-- Fetch and publish new or republished XML.
-- Create reviewable generated changes for newly updated legislation.
+The git repo is a *rendering* generated from the canonical database/object-store corpus, not a
+storage strategy.
 
-### Later: Git Review Model
-
-- Generate a review-friendly statute repository from the canonical database/object-store corpus.
+- Generate a review-friendly statute repository from the canonical corpus.
 - Experiment with provision-level files rather than one Markdown file per document.
 - Open generated branches/PRs for newly published or revised legislation.
 - Link generated diffs back to source URIs, publication events, and effects metadata.
+
+### Phase 3 — Graph and Breadth
+
+An effect record ("SI X amends Act Y s.2(3), commenced date D") is simultaneously the commit
+message for a diff and an edge in a power graph; enabling-powers relationships (which parent act an
+SI was made under) are the other core edge type. Effects and powers are therefore first-class data,
+not audit metadata.
+
+- Store effects and enabling-powers relationships as first-class edges with API resources.
+- Join those edges to external government graphs (organisations, ministers, powers) rather than
+  ingesting them as new corpora.
+- Only then take on genuinely new corpora (local government, regulators' rules) — each one
+  multiplies every pipeline problem, and the payoff mostly arrives after the link layer exists.
+
+### Cross-cutting: Product Surface and Operations
+
+- Phase 1: snapshot-scoped browse routes and richer search over titles/provisions.
+- Phase 2: version and diff endpoints.
+- Phase 3: graph endpoints.
+- Add `sqlc`-style typed query generation to the Worker once the query surface is stable.
+- Add an `export-sample` command producing a small representative local fixture (rows + objects),
+  then prune local trees to the sample.
 
 ## Open Questions
 

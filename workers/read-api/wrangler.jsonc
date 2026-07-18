@@ -16,7 +16,7 @@
 			// then paste the returned id here.
 			"id": "adb06641267a44d9bf124e3592dd5392",
 			// wrangler dev connects here instead of the real Hyperdrive config.
-			"localConnectionString": "postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
+			"localConnectionString": "postgres://postgres:postgres@localhost:5433/british_legislation?sslmode=disable"
 		}
 	],
 	"r2_buckets": [

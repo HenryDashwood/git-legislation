@@ -7,7 +7,7 @@
 # rows to PlanetScale. Run weekly, or whenever the feed should be fresh.
 # Interim mechanism until Publication Log polling exists.
 set -u
-export DB_URL="postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
+export DB_URL="postgres://postgres:postgres@localhost:5433/british_legislation?sslmode=disable"
 cd /Users/henrydashwood/git-legislation
 
 if pgrep -f 'liteparse-sweep/sweep.sh' > /dev/null && [[ "${FORCE:-0}" != "1" ]]; then

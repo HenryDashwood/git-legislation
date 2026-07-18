@@ -7,7 +7,7 @@
 # batch is mostly failures (legislation.gov.uk signals sustained-rate blocks
 # with HTTP 432; the fetch client also backs off per-request on 429/432).
 set -u
-export DB_URL="postgres://postgres:postgres@localhost:5432/british_legislation?sslmode=disable"
+export DB_URL="postgres://postgres:postgres@localhost:5433/british_legislation?sslmode=disable"
 cd /Users/henrydashwood/git-legislation
 
 BATCH=500
