@@ -216,10 +216,13 @@ Goal: a weekly run produces only real changes. This is the foundation of everyth
   legislation.gov.uk URIs), so re-fetching an unchanged document under a new `--at` reuses the
   existing version. `normalize-version-hashes` backfills the canonical hash from stored Markdown
   and merges historical duplicate versions; run it once per database copy after migrating.
-- Poll the Publication Log; track the last processed publication event; fetch and publish new or
-  republished XML. Until then, run `scripts/catch-up.sh` weekly (re-enumerates the current year for
-  every active series, extracts legal dates, syncs objects to R2, delta-syncs rows to PlanetScale
-  via `scripts/delta-sync-planetscale.sh`).
+- ~~Poll the Publication Log~~ Done: `poll-publication-log` walks each day's XML legislation
+  publication events since the date stored in `publication_log_cursor` (in whichever database
+  `DB_URL` targets, so the command can run from any host) and re-ingests every affected document
+  at today's snapshot date; canonical-hash identity makes overlapping polls free. `scripts/poll.sh`
+  wraps it for the local Mac (poll, extract legal dates, sync R2, delta-sync PlanetScale) and runs
+  daily at 07:30 via launchd (`com.henrydashwood.git-legislation.poll`, logs to `var/log/poll.log`).
+  `scripts/catch-up.sh` remains as a belt-and-braces full re-enumeration of the current year.
 - Finish the text-coverage backlog:
   - Refetch as-made/enacted XML (the shell's `rel="self"` URL) for remaining metadata-only records
     where `NumberOfProvisions > 0` upstream.

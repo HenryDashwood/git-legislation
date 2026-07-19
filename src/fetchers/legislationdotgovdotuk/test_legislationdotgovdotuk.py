@@ -26,8 +26,10 @@ from fetchers.legislationdotgovdotuk import (
     fetch_year_documents,
     fetch_year_feed,
     format_xml,
+    parse_publication_log_feed,
     parse_year_feed,
     probe_fetch_report_failures,
+    publication_log_feed_url,
     read_fetch_report,
     write_document_xml,
     write_fetch_report,
@@ -1880,3 +1882,67 @@ def test_legislation_client_retries_432_pdf_rate_limit(monkeypatch) -> None:
         "Rate limited fetching https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf; "
         "waiting 30s before retry 1/5"
     ]
+
+
+PUBLICATION_LOG_FEED = b"""<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:leg="http://www.legislation.gov.uk/namespaces/legislation"
+      xmlns:ukm="http://www.legislation.gov.uk/namespaces/metadata"
+      xmlns:pbl="http://www.legislation.gov.uk/namespaces/publication-log">
+  <leg:page>1</leg:page>
+  <leg:morePages>2</leg:morePages>
+  <entry>
+    <id>http://www.legislation.gov.uk/changes/affecting/uksi/2026/801/published/2026-07-16T23:52:43</id>
+    <dc:identifier>http://www.legislation.gov.uk/id/uksi/2026/801</dc:identifier>
+    <title>The Customs Tariff (Amendment) Regulations 2026</title>
+    <updated>2026-07-16T23:52:43.683074+01:00</updated>
+    <pbl:ContentType>changes</pbl:ContentType>
+    <pbl:Event>published</pbl:Event>
+  </entry>
+  <entry>
+    <id>http://www.legislation.gov.uk/uksi/2012/1812/2016-05-05/data.xml/published/2026-07-16T23:44:27</id>
+    <dc:identifier>http://www.legislation.gov.uk/id/uksi/2012/1812</dc:identifier>
+    <title>The Oxfordshire (Electoral Changes) Order 2012</title>
+    <updated>2026-07-16T23:44:27.762272+01:00</updated>
+    <pbl:ContentType>legislation</pbl:ContentType>
+    <pbl:Event>published</pbl:Event>
+    <pbl:Republished>false</pbl:Republished>
+    <pbl:New>false</pbl:New>
+  </entry>
+  <entry>
+    <id>http://www.legislation.gov.uk/uksi/2026/823/made/data.xml/published/2026-07-16T10:00:00</id>
+    <dc:identifier>http://www.legislation.gov.uk/id/uksi/2026/823</dc:identifier>
+    <title>The Example Regulations 2026</title>
+    <updated>2026-07-16T10:00:00.000000+01:00</updated>
+    <pbl:ContentType>legislation</pbl:ContentType>
+    <pbl:Event>published</pbl:Event>
+    <pbl:Republished>false</pbl:Republished>
+    <pbl:New>true</pbl:New>
+  </entry>
+</feed>
+"""
+
+
+def test_parse_publication_log_feed_reads_legislation_events_and_more_pages() -> None:
+    events, more_pages = parse_publication_log_feed(PUBLICATION_LOG_FEED)
+
+    assert more_pages == 2
+    assert len(events) == 2
+    assert events[0].document.path == ("uksi", "2012", "1812")
+    assert not events[0].is_new
+    assert events[1].document.path == ("uksi", "2026", "823")
+    assert events[1].is_new
+    assert events[1].updated.startswith("2026-07-16T10:00:00")
+
+
+def test_parse_publication_log_feed_skips_changes_content_type() -> None:
+    events, _ = parse_publication_log_feed(PUBLICATION_LOG_FEED)
+
+    assert all(event.document.path != ("uksi", "2026", "801") for event in events)
+
+
+def test_publication_log_feed_url_filters_to_published_xml_legislation() -> None:
+    assert publication_log_feed_url("2026-07-16", page=3) == (
+        "https://www.legislation.gov.uk/update/2026-07-16/legislation/data.feed"
+        "?event=published&format=xml&page=3"
+    )

@@ -276,6 +276,18 @@ CREATE TABLE public.provisions (
 
 
 --
+-- Name: publication_log_cursor; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.publication_log_cursor (
+    id integer NOT NULL,
+    last_polled_date date NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT publication_log_cursor_id_check CHECK ((id = 1))
+);
+
+
+--
 -- Name: storage_objects; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -398,6 +410,14 @@ ALTER TABLE ONLY public.provisions
 
 ALTER TABLE ONLY public.provisions
     ADD CONSTRAINT provisions_version_id_ordinal_key UNIQUE (version_id, ordinal);
+
+
+--
+-- Name: publication_log_cursor publication_log_cursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.publication_log_cursor
+    ADD CONSTRAINT publication_log_cursor_pkey PRIMARY KEY (id);
 
 
 --

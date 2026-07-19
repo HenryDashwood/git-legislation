@@ -1,7 +1,7 @@
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -13,10 +13,12 @@ from converters.clmltomarkdown import render_document_markdown_from_xml
 from fetchers.legislationdotgovdotuk import (
     POINT_IN_TIME_CORPUS_END_YEARS,
     POINT_IN_TIME_CORPUS_START_YEARS,
+    SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES,
     create_client,
     document_ref_from_source_path,
     document_ref_xml_url,
     fetch_document_ref_xml,
+    fetch_publication_day_events,
     fetch_year_document_refs,
 )
 from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
@@ -367,6 +369,160 @@ def rerender_markdown_command(
         f"Scanned {scanned}: {recovered} {action}, {still_metadata} still metadata-only, "
         f"{missing_xml} missing XML, {render_failures} render failures"
     )
+
+
+@app.command("poll-publication-log")
+def poll_publication_log_command(
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="First date to poll as YYYY-MM-DD. Defaults to the stored cursor."),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="Last date to poll as YYYY-MM-DD. Defaults to today."),
+    ] = None,
+    max_documents: Annotated[
+        int | None,
+        typer.Option("--max-documents", min=1, help="Ingest at most this many documents; excess is reported."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="List what would be ingested without fetching XML or writing."),
+    ] = False,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Ingest legislation published since the last poll, via the Publication Log.
+
+    Reads the last-polled date from publication_log_cursor, walks each day's
+    XML legislation publication events, and re-ingests every affected document
+    at today's snapshot date. Content-addressed version identity makes re-runs
+    and overlapping polls free ("reused" instead of new versions). The cursor
+    lives in whichever database is targeted, so the command is location-agnostic.
+    """
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    today = date.today().isoformat()
+    until = until or today
+
+    with psycopg.connect(database_url) as connection:
+        if since is None:
+            row = connection.execute("select last_polled_date from publication_log_cursor where id = 1").fetchone()
+            if row is None:
+                raise click.ClickException(
+                    "No stored cursor yet: pass --since YYYY-MM-DD for the first poll "
+                    "(events before it will not be picked up)."
+                )
+            since = row[0].isoformat()
+        if since > until:
+            raise click.ClickException(f"--since {since} is after --until {until}.")
+
+        poll_dates = _date_range(since, until)
+        documents: dict[str, Any] = {}
+        events_seen = 0
+        with create_client(log=typer.echo) as client:
+            for poll_date in poll_dates:
+                events = fetch_publication_day_events(client, poll_date, log=typer.echo)
+                events_seen += len(events)
+                for event in events:
+                    ref = event.document
+                    if ref.legislation_type not in SUPPORTED_POINT_IN_TIME_LEGISLATION_TYPES:
+                        continue
+                    documents.setdefault("/".join(ref.path), ref)
+                typer.echo(f"Publication Log {poll_date}: {len(events)} events, {len(documents)} documents so far")
+
+            skipped = 0
+            if max_documents is not None and len(documents) > max_documents:
+                skipped = len(documents) - max_documents
+                documents = dict(list(documents.items())[:max_documents])
+
+            if dry_run:
+                for source_path in documents:
+                    typer.echo(source_path)
+                typer.echo(
+                    f"Dry run over {since}..{until}: {events_seen} events, "
+                    f"{len(documents)} documents would be ingested, {skipped} over --max-documents"
+                )
+                return
+
+            report = PublishReport(collection="point-in-time", snapshot_date=today, database_path="Postgres")
+            publish_run_id = create_publish_run(
+                connection,
+                collection="point-in-time",
+                snapshot_date=today,
+                legislation_types={ref.legislation_type for ref in documents.values()},
+            )
+            for index, (source_path, ref) in enumerate(documents.items(), start=1):
+                report.scanned += 1
+                try:
+                    xml_content = fetch_document_ref_xml(client, document=ref, at=today)
+                    markdown = render_document_markdown_from_xml(xml_content)
+                    published_version = publish_document_text(
+                        connection,
+                        source_path=ref.path,
+                        xml_content=xml_content,
+                        markdown=markdown,
+                        collection="point-in-time",
+                        snapshot_date=today,
+                        object_store=object_store,
+                    )
+                    record_publish_observation(connection, publish_run_id, published_version)
+                except Exception as error:
+                    report.failures.append(f"{source_path}: {error}")
+                    continue
+                report.published += 1
+                if published_version.created:
+                    report.created_versions += 1
+                else:
+                    report.reused_versions += 1
+                if index % 100 == 0:
+                    connection.commit()
+                    typer.echo(
+                        f"Ingested {index} of {len(documents)}: {report.created_versions} created, "
+                        f"{report.reused_versions} reused, {len(report.failures)} failures"
+                    )
+            finish_publish_run(connection, publish_run_id)
+
+            # Advancing the cursor past a capped run would silently drop the
+            # skipped documents, so it only moves when the run covered everything.
+            if skipped == 0:
+                connection.execute(
+                    """
+                    insert into publication_log_cursor (id, last_polled_date, updated_at)
+                    values (1, %s, now())
+                    on conflict (id) do update set last_polled_date = excluded.last_polled_date, updated_at = now()
+                    """,
+                    (until,),
+                )
+            connection.commit()
+
+    if skipped:
+        typer.echo(
+            f"Skipped {skipped} documents over --max-documents; cursor NOT advanced - "
+            "re-run to continue (already-ingested documents dedupe to 'reused')."
+        )
+    else:
+        typer.echo(f"Cursor advanced to {until}")
+    typer.echo(render_publish_report(report))
+
+
+def _date_range(since: str, until: str) -> list[str]:
+    first = date.fromisoformat(since)
+    last = date.fromisoformat(until)
+    return [(first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)]
 
 
 @app.command("normalize-version-hashes")

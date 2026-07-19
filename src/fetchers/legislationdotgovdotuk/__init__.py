@@ -28,6 +28,9 @@ BASE_URL = "https://www.legislation.gov.uk"
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[3] / "output"
 USER_AGENT = "git-legislation/0.1"
 ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
+DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
+LEGISLATION_NAMESPACE = "http://www.legislation.gov.uk/namespaces/legislation"
+PUBLICATION_LOG_NAMESPACE = "http://www.legislation.gov.uk/namespaces/publication-log"
 EMPTY_YEAR_LOG_INTERVAL = 100
 FEED_NUMBER_RANGE_SIZE = 100
 FEED_RANGE_436_RETRIES = 5
@@ -357,6 +360,71 @@ def _document_ref_from_href(href: str, title: str) -> DocumentRef:
         title=title,
         source_path=parts,
     )
+
+
+def publication_log_feed_url(updated_date: str, page: int = 1) -> str:
+    # The feed's own rel="next" link is malformed (it appends a second "?page="
+    # clause), so pagination is driven by an explicit page parameter instead.
+    return f"{BASE_URL}/update/{updated_date}/legislation/data.feed?event=published&format=xml&page={page}"
+
+
+@dataclass(frozen=True)
+class PublicationEvent:
+    document: DocumentRef
+    updated: str
+    is_new: bool
+    is_republished: bool
+
+
+def parse_publication_log_feed(feed: bytes) -> tuple[list[PublicationEvent], int]:
+    """Parse one Publication Log page into events plus the remaining page count."""
+    root = ElementTree.fromstring(feed)
+    more_pages_text = root.findtext(f"{{{LEGISLATION_NAMESPACE}}}morePages")
+    more_pages = int(more_pages_text) if more_pages_text and more_pages_text.isdigit() else 0
+
+    events: list[PublicationEvent] = []
+    for entry in root.findall(f"{{{ATOM_NAMESPACE}}}entry"):
+        identifier = entry.findtext(f"{{{DC_NAMESPACE}}}identifier")
+        if identifier is None:
+            continue
+        content_type = entry.findtext(f"{{{PUBLICATION_LOG_NAMESPACE}}}ContentType")
+        if content_type != "legislation":
+            continue
+        document = _document_ref_from_href(
+            href=identifier,
+            title=entry.findtext(f"{{{ATOM_NAMESPACE}}}title") or "",
+        )
+        events.append(
+            PublicationEvent(
+                document=document,
+                updated=entry.findtext(f"{{{ATOM_NAMESPACE}}}updated") or "",
+                is_new=entry.findtext(f"{{{PUBLICATION_LOG_NAMESPACE}}}New") == "true",
+                is_republished=entry.findtext(f"{{{PUBLICATION_LOG_NAMESPACE}}}Republished") == "true",
+            )
+        )
+
+    return events, more_pages
+
+
+def fetch_publication_day_events(
+    client: FetchClient,
+    updated_date: str,
+    log: Callable[[str], None] | None = None,
+) -> list[PublicationEvent]:
+    """Fetch every XML legislation publication event logged on one date."""
+    events: list[PublicationEvent] = []
+    page = 1
+    while True:
+        response = client.get(publication_log_feed_url(updated_date, page=page))
+        response.raise_for_status()
+        page_events, more_pages = parse_publication_log_feed(response.content)
+        events.extend(page_events)
+        if more_pages <= 0:
+            break
+        page += 1
+        if log is not None and page % 25 == 0:
+            log(f"Publication Log {updated_date}: fetched {page} pages ({len(events)} events so far)")
+    return events
 
 
 def create_client(log: Callable[[str], None] | None = None) -> LegislationClient:
