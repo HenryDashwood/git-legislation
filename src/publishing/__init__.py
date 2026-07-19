@@ -16,6 +16,12 @@ DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
 PUBLISH_LOG_INTERVAL = 1000
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+# Point-in-time CLML embeds the request date in legislation.gov.uk URIs
+# (DocumentURI, PDF alternatives), so identical content fetched under two
+# --at dates hashes differently unless those date segments are stripped.
+DATED_LEGISLATION_URI_RE = re.compile(
+    r"(https?://(?:www\.)?legislation\.gov\.uk/[^\s\"'<>\])]*?)/\d{4}-\d{2}-\d{2}(?=[/\s\"'<>\]),?#]|$)"
+)
 WINDOWS_1252_CONTROL_CHARS = str.maketrans(
     {
         "\x80": "EUR",
@@ -128,6 +134,10 @@ class ParsedMarkdownDocument:
     @property
     def content_hash(self) -> str:
         return hashlib.sha256(self.markdown.encode()).hexdigest()
+
+    @property
+    def canonical_content_hash(self) -> str:
+        return canonical_markdown_sha256(self.markdown)
 
     @property
     def word_count(self) -> int:
@@ -382,6 +392,14 @@ def normalize_markdown_text(markdown: str) -> str:
     return markdown.translate(WINDOWS_1252_CONTROL_CHARS)
 
 
+def canonicalize_dated_uris(text: str) -> str:
+    return DATED_LEGISLATION_URI_RE.sub(r"\1", text)
+
+
+def canonical_markdown_sha256(markdown: str) -> str:
+    return hashlib.sha256(canonicalize_dated_uris(normalize_markdown_text(markdown)).encode()).hexdigest()
+
+
 def split_provisions(body_markdown: str) -> list[ProvisionRecord]:
     matches = list(SECTION_HEADING_RE.finditer(body_markdown))
     if not matches:
@@ -454,16 +472,23 @@ def upsert_postgres_stored_document(
     source_uri = _source_uri(document)
     source_object_key = source_object.key if source_object is not None else None
     source_sha256 = source_object.sha256 if source_object is not None else document.content_hash
+    canonical_sha256 = document.canonical_content_hash
     version_id = existing_content_version_id(
         connection,
         document_id=ref.document_id,
         version_kind=version_kind,
+        canonical_sha256=canonical_sha256,
         source_sha256=source_sha256,
         markdown_sha256=document.content_hash,
     )
     created_version = version_id is None
     if version_id is None:
         version_id = available_version_id(connection, preferred_id=ref.version_id, content_hash=document.content_hash)
+    else:
+        connection.execute(
+            "update document_versions set canonical_sha256 = %s where id = %s and canonical_sha256 is null",
+            (canonical_sha256, version_id),
+        )
 
     upsert_storage_object(connection, markdown_object, source_url=None)
     if source_object is not None:
@@ -505,14 +530,16 @@ def upsert_postgres_stored_document(
             """
             insert into document_versions (
                 id, document_id, version_kind, snapshot_date, source_uri, source_object_key,
-                markdown_object_key, source_sha256, markdown_sha256, word_count, is_metadata_only
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                markdown_object_key, source_sha256, markdown_sha256, canonical_sha256,
+                word_count, is_metadata_only
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict(id) do update set
                 source_uri = excluded.source_uri,
                 source_object_key = excluded.source_object_key,
                 markdown_object_key = excluded.markdown_object_key,
                 source_sha256 = excluded.source_sha256,
                 markdown_sha256 = excluded.markdown_sha256,
+                canonical_sha256 = excluded.canonical_sha256,
                 word_count = excluded.word_count,
                 is_metadata_only = excluded.is_metadata_only
             """,
@@ -526,6 +553,7 @@ def upsert_postgres_stored_document(
                 markdown_object.key,
                 source_sha256,
                 document.content_hash,
+                canonical_sha256,
                 document.word_count,
                 document.is_metadata_only,
             ),
@@ -662,21 +690,26 @@ def existing_content_version_id(
     connection: psycopg.Connection[Any],
     document_id: str,
     version_kind: str,
+    canonical_sha256: str,
     source_sha256: str,
     markdown_sha256: str,
 ) -> str | None:
+    # Match on the date-invariant canonical hash; rows published before the
+    # canonical column existed fall back to the legacy exact-hash pair.
     row = connection.execute(
         """
         select id
         from document_versions
         where document_id = %s
           and version_kind = %s
-          and source_sha256 = %s
-          and markdown_sha256 = %s
+          and (
+            canonical_sha256 = %s
+            or (canonical_sha256 is null and source_sha256 = %s and markdown_sha256 = %s)
+          )
         order by created_at, id
         limit 1
         """,
-        (document_id, version_kind, source_sha256, markdown_sha256),
+        (document_id, version_kind, canonical_sha256, source_sha256, markdown_sha256),
     ).fetchone()
     return str(row[0]) if row is not None else None
 
@@ -752,6 +785,122 @@ def insert_document_file(
             source_url,
             object_key,
         ),
+    )
+
+
+@dataclass
+class VersionHashNormalizationReport:
+    dry_run: bool = False
+    backfill_scanned: int = 0
+    backfilled: int = 0
+    missing_markdown: int = 0
+    duplicate_groups: int = 0
+    merged_versions: int = 0
+
+
+def backfill_canonical_hashes(
+    connection: psycopg.Connection[Any],
+    object_store: LocalObjectStore,
+    report: VersionHashNormalizationReport,
+    log: Callable[[str], None] | None = None,
+    commit_interval: int = 5000,
+) -> None:
+    rows = connection.execute(
+        """
+        select id, markdown_object_key
+        from document_versions
+        where canonical_sha256 is null
+        order by id
+        """
+    ).fetchall()
+    _log(log, f"Backfilling canonical hashes for {len(rows)} versions")
+    for version_id, markdown_object_key in rows:
+        report.backfill_scanned += 1
+        markdown_path = object_store.path_for_key(markdown_object_key) if markdown_object_key else None
+        if markdown_path is None or not markdown_path.exists():
+            report.missing_markdown += 1
+            continue
+        canonical_sha256 = canonical_markdown_sha256(markdown_path.read_text())
+        report.backfilled += 1
+        if report.dry_run:
+            continue
+        connection.execute(
+            "update document_versions set canonical_sha256 = %s where id = %s",
+            (canonical_sha256, version_id),
+        )
+        if report.backfilled % commit_interval == 0:
+            connection.commit()
+            _log(log, f"Backfilled {report.backfilled} of {len(rows)} versions")
+    if not report.dry_run:
+        connection.commit()
+
+
+def merge_duplicate_version_rows(
+    connection: psycopg.Connection[Any],
+    report: VersionHashNormalizationReport,
+    log: Callable[[str], None] | None = None,
+    commit_interval: int = 500,
+) -> None:
+    groups = connection.execute(
+        """
+        select document_id, version_kind, canonical_sha256, array_agg(id order by created_at, id)
+        from document_versions
+        where canonical_sha256 is not null
+        group by document_id, version_kind, canonical_sha256
+        having count(*) > 1
+        order by document_id
+        """
+    ).fetchall()
+    _log(log, f"Found {len(groups)} duplicate version groups")
+    for _document_id, _version_kind, _canonical_sha256, version_ids in groups:
+        report.duplicate_groups += 1
+        keeper_id, duplicate_ids = version_ids[0], version_ids[1:]
+        report.merged_versions += len(duplicate_ids)
+        if report.dry_run:
+            continue
+        for duplicate_id in duplicate_ids:
+            # Move file links the keeper lacks; remaining duplicates and the
+            # duplicate's provisions are removed by ON DELETE CASCADE below.
+            connection.execute(
+                """
+                update document_files df set version_id = %s
+                where df.version_id = %s
+                  and not exists (
+                    select 1 from document_files k
+                    where k.version_id = %s
+                      and k.file_kind = df.file_kind
+                      and coalesce(k.source_url, '') = coalesce(df.source_url, '')
+                      and coalesce(k.object_key, '') = coalesce(df.object_key, '')
+                  )
+                """,
+                (keeper_id, duplicate_id, keeper_id),
+            )
+            connection.execute(
+                "update fetch_observations set version_id = %s where version_id = %s",
+                (keeper_id, duplicate_id),
+            )
+            connection.execute(
+                "update documents set latest_version_id = %s where latest_version_id = %s",
+                (keeper_id, duplicate_id),
+            )
+            connection.execute("delete from document_versions where id = %s", (duplicate_id,))
+        if report.duplicate_groups % commit_interval == 0:
+            connection.commit()
+            _log(log, f"Merged {report.merged_versions} duplicate versions across {report.duplicate_groups} groups")
+    if not report.dry_run:
+        connection.commit()
+
+
+def render_version_hash_normalization_report(report: VersionHashNormalizationReport) -> str:
+    action = "would backfill" if report.dry_run else "backfilled"
+    merge_action = "would merge" if report.dry_run else "merged"
+    return "\n".join(
+        [
+            f"Scanned {report.backfill_scanned} versions without a canonical hash: "
+            f"{action} {report.backfilled}, {report.missing_markdown} missing local Markdown",
+            f"Duplicate content groups: {report.duplicate_groups}; "
+            f"{merge_action} {report.merged_versions} duplicate versions",
+        ]
     )
 
 

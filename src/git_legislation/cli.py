@@ -31,12 +31,16 @@ from pdf_parsing import (
 )
 from publishing import (
     PublishReport,
+    VersionHashNormalizationReport,
+    backfill_canonical_hashes,
     create_publish_run,
     finish_publish_run,
+    merge_duplicate_version_rows,
     publish_document_text,
     publish_document_text_to_postgres,
     record_publish_observation,
     render_publish_report,
+    render_version_hash_normalization_report,
 )
 
 app = typer.Typer(no_args_is_help=True)
@@ -363,6 +367,50 @@ def rerender_markdown_command(
         f"Scanned {scanned}: {recovered} {action}, {still_metadata} still metadata-only, "
         f"{missing_xml} missing XML, {render_failures} render failures"
     )
+
+
+@app.command("normalize-version-hashes")
+def normalize_version_hashes_command(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report what would change without writing."),
+    ] = False,
+    skip_merge: Annotated[
+        bool,
+        typer.Option("--skip-merge", help="Backfill canonical hashes without merging duplicate versions."),
+    ] = False,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Backfill date-invariant canonical hashes, then merge duplicate versions.
+
+    Point-in-time CLML embeds the request date in its URIs, so historical
+    catch-up runs created a new version per fetch even when nothing changed.
+    This stamps canonical_sha256 on existing versions from stored Markdown and
+    collapses versions of a document with identical canonical content into the
+    earliest row.
+    """
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    report = VersionHashNormalizationReport(dry_run=dry_run)
+    with psycopg.connect(database_url) as connection:
+        backfill_canonical_hashes(connection, object_store=object_store, report=report, log=typer.echo)
+        if not skip_merge:
+            merge_duplicate_version_rows(connection, report=report, log=typer.echo)
+    typer.echo(render_version_hash_normalization_report(report))
 
 
 @app.command("corpus-counts")

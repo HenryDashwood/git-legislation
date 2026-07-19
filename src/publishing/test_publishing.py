@@ -3,6 +3,8 @@ from typing import Any
 
 import publishing
 from publishing import (
+    canonical_markdown_sha256,
+    canonicalize_dated_uris,
     markdown_object_key,
     markdown_ref_from_path,
     normalize_markdown_text,
@@ -49,6 +51,41 @@ def test_normalize_markdown_text_replaces_windows_1252_punctuation() -> None:
     markdown = '---\ntitle: "Disabled Persons\x92 Vehicles \x96 Example"\n---\n'
 
     assert normalize_markdown_text(markdown) == '---\ntitle: "Disabled Persons\' Vehicles - Example"\n---\n'
+
+
+def test_canonicalize_dated_uris_strips_point_in_time_date_segments() -> None:
+    markdown = "\n".join(
+        [
+            'document_uri: "http://www.legislation.gov.uk/nia/2026/5/2026-07-18"',
+            '  - "http://www.legislation.gov.uk/nia/2026/5/2026-07-18/data.pdf"',
+            '  - "http://www.legislation.gov.uk/nia/2026/5/pdfs/nia_20260005_en.pdf"',
+            "See https://www.legislation.gov.uk/ukpga/1971/77/2026-05-05 for details.",
+        ]
+    )
+
+    assert canonicalize_dated_uris(markdown) == "\n".join(
+        [
+            'document_uri: "http://www.legislation.gov.uk/nia/2026/5"',
+            '  - "http://www.legislation.gov.uk/nia/2026/5/data.pdf"',
+            '  - "http://www.legislation.gov.uk/nia/2026/5/pdfs/nia_20260005_en.pdf"',
+            "See https://www.legislation.gov.uk/ukpga/1971/77 for details.",
+        ]
+    )
+
+
+def test_canonicalize_dated_uris_leaves_non_legislation_urls_and_plain_dates_alone() -> None:
+    markdown = "Made on 2026-07-18. See https://example.com/2026-07-18/report and s. 2 of the Act."
+
+    assert canonicalize_dated_uris(markdown) == markdown
+
+
+def test_canonical_markdown_sha256_is_invariant_across_snapshot_dates() -> None:
+    at_first_date = MARKDOWN.replace("ukpga/2026/14", "ukpga/2026/14/2026-05-05")
+    at_second_date = MARKDOWN.replace("ukpga/2026/14", "ukpga/2026/14/2026-07-18")
+
+    assert at_first_date != at_second_date
+    assert canonical_markdown_sha256(at_first_date) == canonical_markdown_sha256(at_second_date)
+    assert canonical_markdown_sha256(at_first_date) == canonical_markdown_sha256(MARKDOWN)
 
 
 def test_markdown_ref_from_point_in_time_path(tmp_path: Path) -> None:
@@ -200,6 +237,7 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
     assert version_params[2] == "point_in_time"
     assert version_params[5] == "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml"
     assert version_params[6] == "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+    assert version_params[9] == canonical_markdown_sha256(MARKDOWN)
     stored_markdown_path = (
         tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
     )
@@ -287,6 +325,12 @@ def test_publish_markdown_to_postgres_reuses_existing_content_version(tmp_path: 
     assert report.created_versions == 0
     assert report.reused_versions == 1
     assert not any("insert into document_versions" in sql for sql, _ in connection.executed)
+    lookup_sql, lookup_params = next(
+        (sql, params) for sql, params in connection.executed if "from document_versions where document_id" in sql
+    )
+    assert "canonical_sha256" in lookup_sql
+    assert lookup_params[2] == canonical_markdown_sha256(MARKDOWN)
+    assert any(sql.startswith("update document_versions set canonical_sha256") for sql, _ in connection.executed)
     update_latest_params = next(params for sql, params in connection.executed if sql.startswith("update documents"))
     assert update_latest_params[0] == "point-in-time:2026-05-05:ukpga/2026/14"
     observation_params = next(params for sql, params in connection.executed if "insert into fetch_observations" in sql)

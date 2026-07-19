@@ -150,14 +150,16 @@ Populate from local (uses the docker container's PG client tools; no DDL rights 
 zsh scripts/load-planetscale.sh
 ```
 
-Objects: sync the local object store to R2 with rclone (idempotent; re-run to pick up deltas):
+Objects: sync the locally-resident trees (markdown, xml) to R2 (idempotent; re-run to pick up deltas):
 
 ```bash
-rclone sync var/object-store/legislation r2:british-legislation --transfers 16 --progress
+zsh scripts/sync.sh
 ```
 
-`scripts/sync.sh` and `scripts/drain.sh` wrap this for bulk mirroring and for continuously moving
-write-once artifacts (PDFs, parse reports) to R2 while deleting verified local copies.
+Never run a full-tree `rclone sync` of `var/object-store/legislation`: the drained trees (pdf,
+reports, extracted-text) are deleted locally by `scripts/drain.sh` after verified upload, and a
+full-tree sync would mirror those deletions into R2. `sync.sh` limits itself to the resident
+trees; `drain.sh` moves write-once artifacts to R2 and deletes the verified local copies.
 
 To cache the PDF for a specific document into the object store:
 
@@ -209,10 +211,11 @@ effects/powers layer is the hinge that turns diffs into a power graph.
 
 Goal: a weekly run produces only real changes. This is the foundation of everything downstream.
 
-- **Normalise dated URIs out of version content hashes** (blocking prerequisite for all diff work):
-  CLML embeds the request date, so re-fetching an unchanged document under a new `--at` creates a
-  fake new version ("reused 0") on every catch-up. Until fixed, a real change cannot be
-  distinguished from ingestion noise.
+- ~~**Normalise dated URIs out of version content hashes**~~ Done: version identity now uses
+  `canonical_sha256` (a hash of the Markdown with request-date segments stripped from
+  legislation.gov.uk URIs), so re-fetching an unchanged document under a new `--at` reuses the
+  existing version. `normalize-version-hashes` backfills the canonical hash from stored Markdown
+  and merges historical duplicate versions; run it once per database copy after migrating.
 - Poll the Publication Log; track the last processed publication event; fetch and publish new or
   republished XML. Until then, run `scripts/catch-up.sh` weekly (re-enumerates the current year for
   every active series, extracts legal dates, syncs objects to R2, delta-syncs rows to PlanetScale
