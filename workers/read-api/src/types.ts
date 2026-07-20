@@ -50,6 +50,7 @@ export interface Repository {
   listVersions(documentId: string): Promise<Row[]>;
   getVersion(versionId: string): Promise<Row | null>;
   listProvisions(versionId: string): Promise<Row[]>;
+  listProvisionTexts(versionId: string): Promise<Row[]>;
   getProvision(versionId: string, anchor: string): Promise<Row | null>;
   listFiles(versionId: string): Promise<Row[]>;
   getCanonicalFile(versionId: string, fileKind: string): Promise<Row | null>;

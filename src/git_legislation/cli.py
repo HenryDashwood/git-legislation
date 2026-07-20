@@ -20,6 +20,7 @@ from fetchers.legislationdotgovdotuk import (
     fetch_document_ref_xml,
     fetch_publication_day_events,
     fetch_year_document_refs,
+    parse_document_version_dates,
 )
 from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore
 from pdf_parsing import (
@@ -33,6 +34,7 @@ from pdf_parsing import (
 )
 from publishing import (
     PublishReport,
+    RerenderReport,
     VersionHashNormalizationReport,
     backfill_canonical_hashes,
     create_publish_run,
@@ -42,7 +44,9 @@ from publishing import (
     publish_document_text_to_postgres,
     record_publish_observation,
     render_publish_report,
+    render_rerender_report,
     render_version_hash_normalization_report,
+    rerender_document_versions,
 )
 
 app = typer.Typer(no_args_is_help=True)
@@ -371,6 +375,203 @@ def rerender_markdown_command(
     )
 
 
+@app.command("backfill-document-versions")
+def backfill_document_versions_command(
+    source_paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Legislation source paths, e.g. ukpga/1971/77. Repeatable."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report available/missing version dates without fetching them."),
+    ] = False,
+    max_versions: Annotated[
+        int | None,
+        typer.Option("--max-versions", min=1, help="Fetch at most this many missing versions per document."),
+    ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Backfill every advertised point-in-time expression of the given documents.
+
+    Reads the dct:hasVersion list from each document's current CLML and ingests
+    each dated expression with snapshot_date set to its validity-start date, so
+    document_versions becomes the document's revision timeline. Dates already
+    present are skipped; identical consecutive expressions dedupe via the
+    canonical content hash.
+    """
+    paths = list(source_paths or [])
+    if from_file is not None:
+        for line in from_file.read_text().splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if stripped:
+                paths.append(stripped)
+    if not paths:
+        raise click.ClickException("Pass source paths or --from-file.")
+
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    report = PublishReport(collection="point-in-time", database_path="Postgres")
+    total_available = total_missing = 0
+
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        publish_run_id = None
+        for source_path in paths:
+            document = document_ref_from_source_path(source_path)
+            try:
+                current_xml = fetch_document_ref_xml(client, document=document)
+                version_dates = parse_document_version_dates(current_xml)
+            except Exception as error:
+                report.failures.append(f"{source_path}: version list: {error}")
+                typer.echo(f"{source_path}: failed to read version list: {error}")
+                continue
+
+            existing = {
+                row[0].isoformat()
+                for row in connection.execute(
+                    """
+                    select snapshot_date from document_versions
+                    where document_id = %s and version_kind = 'point_in_time' and snapshot_date is not null
+                    """,
+                    ("/".join(document.path),),
+                ).fetchall()
+            }
+            missing = [version_date for version_date in version_dates if version_date not in existing]
+            total_available += len(version_dates)
+            total_missing += len(missing)
+            typer.echo(f"{source_path}: {len(version_dates)} versions advertised, {len(missing)} missing")
+            if dry_run:
+                continue
+            if max_versions is not None:
+                missing = missing[:max_versions]
+
+            if publish_run_id is None:
+                publish_run_id = create_publish_run(
+                    connection,
+                    collection="point-in-time",
+                    snapshot_date=None,
+                    legislation_types={document.legislation_type},
+                )
+            for index, version_date in enumerate(missing, start=1):
+                report.scanned += 1
+                try:
+                    xml_content = fetch_document_ref_xml(client, document=document, at=version_date)
+                    markdown = render_document_markdown_from_xml(xml_content)
+                    published_version = publish_document_text(
+                        connection,
+                        source_path=document.path,
+                        xml_content=xml_content,
+                        markdown=markdown,
+                        collection="point-in-time",
+                        snapshot_date=version_date,
+                        object_store=object_store,
+                    )
+                    record_publish_observation(connection, publish_run_id, published_version)
+                except Exception as error:
+                    report.failures.append(f"{source_path}@{version_date}: {error}")
+                    continue
+                report.published += 1
+                if published_version.created:
+                    report.created_versions += 1
+                else:
+                    report.reused_versions += 1
+                if index % 25 == 0:
+                    connection.commit()
+                    typer.echo(f"{source_path}: {index} of {len(missing)} versions ingested")
+            connection.commit()
+            typer.echo(
+                f"{source_path}: done ({report.created_versions} created, "
+                f"{report.reused_versions} reused so far)"
+            )
+        if publish_run_id is not None:
+            finish_publish_run(connection, publish_run_id)
+        connection.commit()
+
+    if dry_run:
+        typer.echo(
+            f"Dry run: {total_available} versions advertised, {total_missing} missing across {len(paths)} documents"
+        )
+        return
+    typer.echo(render_publish_report(report))
+
+
+@app.command("rerender-document-versions")
+def rerender_document_versions_command(
+    source_paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Legislation source paths, e.g. ukpga/1971/77. Repeatable."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
+    ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Re-render every stored version of the given documents with the current converter, in place.
+
+    Use after converter changes so all versions of a document are rendered by
+    the same converter and diffs compare like with like. Follow with
+    normalize-version-hashes to merge versions whose text became identical.
+    """
+    paths = list(source_paths or [])
+    if from_file is not None:
+        for line in from_file.read_text().splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if stripped:
+                paths.append(stripped)
+    if not paths:
+        raise click.ClickException("Pass source paths or --from-file.")
+
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    report = RerenderReport()
+    with psycopg.connect(database_url) as connection:
+        for source_path in paths:
+            document = document_ref_from_source_path(source_path)
+            rerender_document_versions(
+                connection,
+                object_store=object_store,
+                document_id="/".join(document.path),
+                report=report,
+                render=render_document_markdown_from_xml,
+                log=typer.echo,
+            )
+            connection.commit()
+            typer.echo(f"{source_path}: {report.rerendered} re-rendered so far ({report.scanned} scanned)")
+    typer.echo(render_rerender_report(report))
+
+
 @app.command("poll-publication-log")
 def poll_publication_log_command(
     since: Annotated[
@@ -468,7 +669,7 @@ def poll_publication_log_command(
             for index, (source_path, ref) in enumerate(documents.items(), start=1):
                 report.scanned += 1
                 try:
-                    xml_content = fetch_document_ref_xml(client, document=ref, at=today)
+                    xml_content = fetch_document_ref_xml(client, document=ref, at=today, fallback_to_latest=True)
                     markdown = render_document_markdown_from_xml(xml_content)
                     published_version = publish_document_text(
                         connection,

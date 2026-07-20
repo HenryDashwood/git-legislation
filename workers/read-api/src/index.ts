@@ -3,6 +3,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createSql } from "./db";
+import { computeProvisionDiff } from "./diff";
 import { PostgresRepository } from "./repository";
 import { LEGISLATION_TYPE_CODES, type Repository } from "./types";
 
@@ -113,6 +114,38 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
       return c.json({ detail: "Document not found" }, 404);
     }
     return c.json(document);
+  });
+
+  // Provision-level diff between two versions of the same document.
+  app.get("/diff", async (c) => {
+    const fromId = c.req.query("from");
+    const toId = c.req.query("to");
+    if (!fromId || !toId) {
+      return c.json({ detail: "from and to version ids are required" }, 422);
+    }
+    const repository = c.get("repository");
+    const [fromVersion, toVersion] = await Promise.all([
+      repository.getVersion(fromId),
+      repository.getVersion(toId),
+    ]);
+    if (fromVersion === null || toVersion === null) {
+      return c.json({ detail: "Version not found" }, 404);
+    }
+    if (fromVersion["document_id"] !== toVersion["document_id"]) {
+      return c.json({ detail: "Versions belong to different documents" }, 422);
+    }
+    const [fromProvisions, toProvisions] = await Promise.all([
+      repository.listProvisionTexts(fromId),
+      repository.listProvisionTexts(toId),
+    ]);
+    const diff = computeProvisionDiff(fromProvisions, toProvisions);
+    return c.json({
+      document_id: fromVersion["document_id"],
+      from: fromVersion,
+      to: toVersion,
+      summary: diff.summary,
+      entries: diff.entries,
+    });
   });
 
   app.get("/files/:id/content", async (c) => {

@@ -19,6 +19,7 @@ from fetchers.legislationdotgovdotuk import (
     document_ref_xml_url,
     document_xml_output_path,
     document_xml_url,
+    fetch_document_ref_xml,
     fetch_document_xml,
     fetch_enacted_corpus,
     fetch_point_in_time_corpus,
@@ -26,6 +27,7 @@ from fetchers.legislationdotgovdotuk import (
     fetch_year_documents,
     fetch_year_feed,
     format_xml,
+    parse_document_version_dates,
     parse_publication_log_feed,
     parse_year_feed,
     probe_fetch_report_failures,
@@ -1946,3 +1948,52 @@ def test_publication_log_feed_url_filters_to_published_xml_legislation() -> None
         "https://www.legislation.gov.uk/update/2026-07-16/legislation/data.feed"
         "?event=published&format=xml&page=3"
     )
+
+
+def test_parse_document_version_dates_reads_dated_has_version_links() -> None:
+    xml = b"""<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation"
+        xmlns:atom="http://www.w3.org/2005/Atom" DocumentURI="http://www.legislation.gov.uk/ukpga/1971/77">
+      <Metadata>
+        <atom:link rel="http://purl.org/dc/terms/hasVersion"
+            href="http://www.legislation.gov.uk/ukpga/1971/77/enacted" title="enacted"/>
+        <atom:link rel="http://purl.org/dc/terms/hasVersion"
+            href="http://www.legislation.gov.uk/ukpga/1971/77/1991-02-01" title="1991-02-01"/>
+        <atom:link rel="http://purl.org/dc/terms/hasVersion"
+            href="http://www.legislation.gov.uk/ukpga/1971/77/prospective" title="prospective"/>
+        <atom:link rel="http://purl.org/dc/terms/hasVersion"
+            href="http://www.legislation.gov.uk/ukpga/1971/77/1993-07-26" title="1993-07-26"/>
+        <atom:link rel="self" href="http://www.legislation.gov.uk/ukpga/1971/77/2026-05-05" title="2026-05-05"/>
+      </Metadata>
+    </Legislation>"""
+
+    assert parse_document_version_dates(xml) == ["1991-02-01", "1993-07-26"]
+
+
+def test_fetch_document_ref_xml_falls_back_to_latest_on_dated_404() -> None:
+    urls: list[str] = []
+
+    class StubClient:
+        def get(self, url: str):
+            urls.append(url)
+            if "/2026-07-20/" in url:
+                return FetchResponseStub(404, b"not found", url)
+            return FetchResponseStub(200, b"<Legislation />", url)
+
+    class FetchResponseStub:
+        def __init__(self, status_code: int, content: bytes, url: str) -> None:
+            self.status_code = status_code
+            self.content = content
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    document = document_ref_from_source_path("uksi/2026/834")
+    content = fetch_document_ref_xml(StubClient(), document=document, at="2026-07-20", fallback_to_latest=True)
+
+    assert content == b"<Legislation />"
+    assert urls == [
+        "https://www.legislation.gov.uk/uksi/2026/834/2026-07-20/data.xml",
+        "https://www.legislation.gov.uk/uksi/2026/834/data.xml",
+    ]

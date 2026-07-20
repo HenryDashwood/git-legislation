@@ -1,4 +1,5 @@
 from pathlib import Path
+from xml.etree import ElementTree
 
 from converters.clmltomarkdown import (
     ConversionReport,
@@ -377,3 +378,41 @@ def test_write_conversion_report_writes_point_in_time_report(tmp_path: Path) -> 
     assert path == tmp_path / "reports" / "convert" / "point-in-time" / "2026-05-03" / "ukpga.json"
     assert '"mode": "point-in-time"' in path.read_text()
     assert '"legislation_type": "ukpga"' in path.read_text()
+
+
+def test_element_text_is_stable_across_pretty_printed_inline_markup() -> None:
+    from converters.clmltomarkdown import _element_text
+
+    compact = ElementTree.fromstring(
+        '<Text xmlns="http://www.legislation.gov.uk/namespaces/legislation">'
+        "in <Substitution>subsection (1)(d)</Substitution><Addition>, omit the reference.</Addition></Text>"
+    )
+    pretty = ElementTree.fromstring(
+        '<Text xmlns="http://www.legislation.gov.uk/namespaces/legislation">'
+        "in <Substitution>subsection (1)(d)\n"
+        "                      </Substitution><Addition>, omit the reference.</Addition></Text>"
+    )
+
+    assert _element_text(compact) == "in subsection (1)(d), omit the reference."
+    assert _element_text(pretty) == _element_text(compact)
+
+
+def test_element_text_keeps_spaced_omission_dots() -> None:
+    from converters.clmltomarkdown import _element_text
+
+    element = ElementTree.fromstring(
+        '<Text xmlns="http://www.legislation.gov.uk/namespaces/legislation">sections 25A . . . and 26A</Text>'
+    )
+
+    assert _element_text(element) == "sections 25A . . . and 26A"
+
+
+def test_element_text_strips_space_before_sentence_dot_but_not_omission_dots() -> None:
+    from converters.clmltomarkdown import _element_text
+
+    element = ElementTree.fromstring(
+        '<Text xmlns="http://www.legislation.gov.uk/namespaces/legislation">'
+        "the Immigration Act 2016 <Addition>.</Addition> But sections 25A . . . apply.</Text>"
+    )
+
+    assert _element_text(element) == "the Immigration Act 2016. But sections 25A . . . apply."

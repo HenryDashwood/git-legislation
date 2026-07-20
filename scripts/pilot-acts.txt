@@ -1,0 +1,33 @@
+# Phase 2 diff-pilot corpus: heavily amended UK Public General Acts.
+# Chapter numbers verified against documents.title in the local corpus.
+# Used by: uv run git-legislation backfill-document-versions --from-file scripts/pilot-acts.txt
+ukpga/1971/77   # Immigration Act 1971
+ukpga/2006/46   # Companies Act 2006
+ukpga/1985/68   # Housing Act 1985
+ukpga/1992/4    # Social Security Contributions and Benefits Act 1992
+ukpga/2003/44   # Criminal Justice Act 2003
+ukpga/2010/15   # Equality Act 2010
+ukpga/1990/8    # Town and Country Planning Act 1990
+ukpga/1990/43   # Environmental Protection Act 1990
+ukpga/1989/41   # Children Act 1989
+ukpga/1988/52   # Road Traffic Act 1988
+ukpga/1984/60   # Police and Criminal Evidence Act 1984
+ukpga/1983/20   # Mental Health Act 1983
+ukpga/1988/50   # Housing Act 1988
+ukpga/1996/18   # Employment Rights Act 1996
+ukpga/1986/45   # Insolvency Act 1986
+ukpga/2000/8    # Financial Services and Markets Act 2000
+ukpga/2002/29   # Proceeds of Crime Act 2002
+ukpga/2000/11   # Terrorism Act 2000
+ukpga/1999/33   # Immigration and Asylum Act 1999
+ukpga/2002/41   # Nationality, Immigration and Asylum Act 2002
+ukpga/1994/23   # Value Added Tax Act 1994
+ukpga/2007/3    # Income Tax Act 2007
+ukpga/2010/4    # Corporation Tax Act 2010
+ukpga/2003/17   # Licensing Act 2003
+ukpga/1972/70   # Local Government Act 1972
+ukpga/1983/2    # Representation of the People Act 1983
+ukpga/1985/70   # Landlord and Tenant Act 1985
+ukpga/1974/37   # Health and Safety at Work etc. Act 1974
+ukpga/1996/56   # Education Act 1996
+ukpga/2018/12   # Data Protection Act 2018

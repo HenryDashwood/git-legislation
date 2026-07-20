@@ -44,6 +44,11 @@ export class ReadApiClient {
     return this.getJson(`/documents/${documentPath}/versions`);
   }
 
+  async getDiff(fromId: string, toId: string): Promise<Json> {
+    const params = new URLSearchParams({ from: fromId, to: toId });
+    return this.getJson(`/diff?${params.toString()}`);
+  }
+
   async listProvisions(versionId: string): Promise<Json> {
     return this.getJson(`/versions/${versionId}/provisions`);
   }

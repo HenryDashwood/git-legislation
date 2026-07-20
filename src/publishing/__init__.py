@@ -843,7 +843,8 @@ def merge_duplicate_version_rows(
 ) -> None:
     groups = connection.execute(
         """
-        select document_id, version_kind, canonical_sha256, array_agg(id order by created_at, id)
+        select document_id, version_kind, canonical_sha256,
+               array_agg(id order by snapshot_date asc nulls last, created_at, id)
         from document_versions
         where canonical_sha256 is not null
         group by document_id, version_kind, canonical_sha256
@@ -889,6 +890,127 @@ def merge_duplicate_version_rows(
             _log(log, f"Merged {report.merged_versions} duplicate versions across {report.duplicate_groups} groups")
     if not report.dry_run:
         connection.commit()
+
+
+@dataclass
+class RerenderReport:
+    scanned: int = 0
+    rerendered: int = 0
+    unchanged: int = 0
+    missing_xml: int = 0
+    failures: list[str] = field(default_factory=list)
+
+
+def rerender_document_versions(
+    connection: psycopg.Connection[Any],
+    object_store: LocalObjectStore,
+    document_id: str,
+    report: RerenderReport,
+    render: Callable[[bytes], str],
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Re-render every stored version of a document with the current converter, in place.
+
+    Rewrites the Markdown object under its existing key and refreshes the
+    version row's hashes, word count, and provisions. Version identity and
+    object keys are unchanged; run normalize-version-hashes afterwards to
+    merge versions whose text became identical.
+    """
+    rows = connection.execute(
+        """
+        select dv.id, dv.version_kind, dv.snapshot_date, dv.source_object_key, dv.markdown_object_key,
+               d.source_path
+        from document_versions dv
+        join documents d on d.id = dv.document_id
+        where dv.document_id = %s and dv.source_object_key is not null and dv.markdown_object_key is not null
+        order by dv.snapshot_date nulls first, dv.id
+        """,
+        (document_id,),
+    ).fetchall()
+    for version_id, version_kind, snapshot_date, source_key, markdown_key, source_path in rows:
+        report.scanned += 1
+        xml_path = object_store.path_for_key(source_key)
+        if not xml_path.exists():
+            report.missing_xml += 1
+            continue
+        try:
+            markdown = render(xml_path.read_bytes())
+        except Exception as error:
+            report.failures.append(f"{version_id}: {error}")
+            continue
+
+        ref = MarkdownDocumentRef(
+            collection="point-in-time" if version_kind == "point_in_time" else "enacted",
+            snapshot_date=snapshot_date.isoformat() if snapshot_date is not None else None,
+            source_path=tuple(source_path),
+            markdown_path=Path(markdown_key),
+        )
+        document = parse_markdown_document_text(ref, markdown)
+        existing = connection.execute(
+            "select markdown_sha256 from document_versions where id = %s", (version_id,)
+        ).fetchone()
+        if existing is not None and existing[0] == document.content_hash:
+            report.unchanged += 1
+            continue
+
+        markdown_object = object_store.put_text(document.markdown, key=markdown_key, content_type="text/markdown")
+        upsert_storage_object(connection, markdown_object, source_url=None)
+        connection.execute(
+            """
+            update document_versions
+            set markdown_sha256 = %s, canonical_sha256 = %s, word_count = %s, is_metadata_only = %s
+            where id = %s
+            """,
+            (
+                document.content_hash,
+                document.canonical_content_hash,
+                document.word_count,
+                document.is_metadata_only,
+                version_id,
+            ),
+        )
+        connection.execute(
+            """
+            update document_files set sha256 = %s
+            where version_id = %s and file_kind = 'markdown' and object_key = %s
+            """,
+            (document.content_hash, version_id, markdown_key),
+        )
+        connection.execute("delete from provisions where version_id = %s", (version_id,))
+        for provision in document.provisions:
+            connection.execute(
+                """
+                insert into provisions (
+                    id, version_id, document_id, ordinal, provision_type, number,
+                    heading, anchor, markdown, plain_text
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    f"{version_id}:provision:{provision.ordinal}",
+                    version_id,
+                    document_id,
+                    provision.ordinal,
+                    _provision_type(provision),
+                    provision.number,
+                    provision.heading,
+                    provision.anchor,
+                    provision.markdown,
+                    provision.text,
+                ),
+            )
+        report.rerendered += 1
+        if report.rerendered % 50 == 0:
+            connection.commit()
+            _log(log, f"Re-rendered {report.rerendered} versions ({report.scanned} scanned)")
+
+
+def render_rerender_report(report: RerenderReport) -> str:
+    lines = [
+        f"Scanned {report.scanned} versions: re-rendered {report.rerendered}, "
+        f"{report.unchanged} unchanged, {report.missing_xml} missing XML, {len(report.failures)} failures"
+    ]
+    lines.extend(f"- {failure}" for failure in report.failures[:20])
+    return "\n".join(lines)
 
 
 def render_version_hash_normalization_report(report: VersionHashNormalizationReport) -> str:

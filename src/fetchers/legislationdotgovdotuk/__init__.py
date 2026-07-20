@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -362,6 +363,26 @@ def _document_ref_from_href(href: str, title: str) -> DocumentRef:
     )
 
 
+HAS_VERSION_REL = "http://purl.org/dc/terms/hasVersion"
+ISO_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+
+def parse_document_version_dates(xml_content: bytes | str) -> list[str]:
+    """Read the dated point-in-time expressions a document's CLML advertises.
+
+    CLML metadata lists every available expression as an atom:link with
+    rel=dct:hasVersion; dated titles are validity-start dates. Non-date
+    expressions ("enacted", "prospective") are excluded.
+    """
+    root = ElementTree.fromstring(xml_content)
+    dates = {
+        title
+        for link in root.iter(f"{{{ATOM_NAMESPACE}}}link")
+        if link.attrib.get("rel") == HAS_VERSION_REL and ISO_DATE_RE.match(title := link.attrib.get("title", ""))
+    }
+    return sorted(dates)
+
+
 def publication_log_feed_url(updated_date: str, page: int = 1) -> str:
     # The feed's own rel="next" link is malformed (it appends a second "?page="
     # clause), so pagination is driven by an explicit page parameter instead.
@@ -463,9 +484,16 @@ def fetch_document_ref_xml(
     document: DocumentRef,
     as_enacted: bool = False,
     at: str | None = None,
+    fallback_to_latest: bool = False,
 ) -> bytes:
     url = document_ref_xml_url(document=document, as_enacted=as_enacted, at=at)
     response = client.get(url)
+    if fallback_to_latest and at is not None and getattr(response, "status_code", None) == 404:
+        # Brand-new made-only documents have no dated point-in-time expression
+        # yet: the Publication Log announces them while {id}/{date}/data.xml
+        # still 404s. The undated URL serves the current (as-made) text.
+        url = document_ref_xml_url(document=document)
+        response = client.get(url)
     response.raise_for_status()
     _ensure_legislation_xml(response.content, url)
     return response.content

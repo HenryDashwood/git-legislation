@@ -150,6 +150,18 @@ export class PostgresRepository implements Repository {
     );
   }
 
+  async listProvisionTexts(versionId: string): Promise<Row[]> {
+    return await this.sql.unsafe(
+      `
+      select ordinal, provision_type, number, heading, anchor, markdown
+      from provisions
+      where version_id = $1
+      order by ordinal
+      `,
+      [versionId],
+    );
+  }
+
   async getProvision(versionId: string, anchor: string): Promise<Row | null> {
     const rows = await this.sql.unsafe(
       `

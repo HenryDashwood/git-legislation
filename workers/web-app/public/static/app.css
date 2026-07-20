@@ -965,3 +965,128 @@ a.timeline-row:focus-visible {
   color: var(--ink);
   font-weight: 700;
 }
+
+/* ---------- Version diff ---------- */
+
+.diff-compare-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.diff-compare-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.diff-compare-form select {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.diff-previous-link {
+  font-size: 0.85rem;
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.diff-entry-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.diff-entry-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.diff-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+}
+
+.diff-badge-changed {
+  border-color: var(--ni);
+  color: var(--ni);
+}
+
+.diff-badge-added {
+  border-color: var(--wales);
+  color: var(--wales);
+}
+
+.diff-badge-removed {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.diff-text {
+  font-family: var(--font-serif);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--paper-deep);
+  border-radius: 4px;
+}
+
+.diff-text del,
+.diff-fallback del {
+  background: #f3d5d2;
+  color: var(--accent-deep);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.diff-text ins,
+.diff-fallback ins {
+  background: #d8e8dc;
+  color: var(--wales);
+  text-decoration: none;
+}
+
+.diff-text-added {
+  border-left: 3px solid var(--wales);
+}
+
+.diff-text-removed {
+  border-left: 3px solid var(--error);
+  color: var(--muted);
+}
+
+.diff-unchanged-note {
+  text-align: center;
+}
+
+.diff-fallback del,
+.diff-fallback ins {
+  display: block;
+  padding: 0.5rem;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}

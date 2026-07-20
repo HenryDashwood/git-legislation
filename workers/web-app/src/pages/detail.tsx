@@ -169,12 +169,58 @@ export function DetailPage(props: DetailProps) {
 
       <section class="panel">
         <h2>Versions</h2>
+        {props.versions.length > 1 ? (
+          <form class="diff-compare-form" method="get" action="/diff">
+            <label>
+              From
+              <select name="from">
+                {props.versions.map((version, index) => (
+                  <option
+                    value={String(version["id"])}
+                    selected={index === props.versions.length - 2}
+                  >
+                    {versionOptionLabel(version)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              To
+              <select name="to">
+                {props.versions.map((version, index) => (
+                  <option
+                    value={String(version["id"])}
+                    selected={index === props.versions.length - 1}
+                  >
+                    {versionOptionLabel(version)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button class="button" type="submit">
+              Compare
+            </button>
+          </form>
+        ) : null}
         {props.versions.length > 0 ? (
           <ul class="compact-list">
-            {props.versions.map((version) => (
+            {props.versions.map((version, index) => (
               <li>
                 {version["id"]}
                 {version["snapshot_date"] ? <> ({version["snapshot_date"]})</> : null}
+                {index > 0 ? (
+                  <>
+                    {" "}
+                    <a
+                      class="diff-previous-link"
+                      href={`/diff?from=${encodeURIComponent(
+                        String(props.versions[index - 1]?.["id"] ?? ""),
+                      )}&to=${encodeURIComponent(String(version["id"]))}`}
+                    >
+                      changes from previous
+                    </a>
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -188,6 +234,12 @@ export function DetailPage(props: DetailProps) {
       </section>
     </Layout>
   );
+}
+
+function versionOptionLabel(version: Json): string {
+  const snapshot = version["snapshot_date"];
+  const kind = String(version["version_kind"] ?? "");
+  return snapshot ? `${snapshot} (${kind})` : `${kind}: ${version["id"]}`;
 }
 
 const EXTENT_NAMES: Record<string, string> = {

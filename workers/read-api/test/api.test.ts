@@ -47,6 +47,18 @@ const MARKDOWN_FILE: Row = {
   created_at: "2026-05-05T12:00:00Z",
 };
 
+const EARLIER_VERSION: Row = {
+  ...VERSION,
+  id: "point-in-time:2020-01-01:ukpga/2026/14",
+  snapshot_date: "2020-01-01",
+};
+
+const OTHER_DOCUMENT_VERSION: Row = {
+  ...VERSION,
+  id: "point-in-time:2026-05-05:ukpga/2026/15",
+  document_id: "ukpga/2026/15",
+};
+
 class FakeRepository implements Repository {
   calls: Record<string, unknown> = {};
 
@@ -73,12 +85,35 @@ class FakeRepository implements Repository {
   }
 
   async getVersion(versionId: string): Promise<Row | null> {
-    return versionId === VERSION["id"] ? VERSION : null;
+    if (versionId === VERSION["id"]) {
+      return VERSION;
+    }
+    if (versionId === EARLIER_VERSION["id"]) {
+      return EARLIER_VERSION;
+    }
+    if (versionId === OTHER_DOCUMENT_VERSION["id"]) {
+      return OTHER_DOCUMENT_VERSION;
+    }
+    return null;
   }
 
   async listProvisions(versionId: string): Promise<Row[]> {
     this.calls["listProvisions"] = versionId;
     return [{ id: `${versionId}:provision:1`, ordinal: 1, anchor: "1-limit", heading: "Limit" }];
+  }
+
+  async listProvisionTexts(versionId: string): Promise<Row[]> {
+    this.calls["listProvisionTexts"] = versionId;
+    if (versionId === EARLIER_VERSION["id"]) {
+      return [
+        { ordinal: 1, provision_type: "section", number: "1", heading: "1 Limit", anchor: "1-limit", markdown: "## 1 Limit\n\nThe limit is £10 billion." },
+        { ordinal: 2, provision_type: "section", number: "2", heading: "2 Repealed later", anchor: "2-repealed", markdown: "## 2 Repealed later\n\nGone soon." },
+      ];
+    }
+    return [
+      { ordinal: 1, provision_type: "section", number: "1", heading: "1 Limit", anchor: "1-limit", markdown: "## 1 Limit\n\nThe limit is £20 billion." },
+      { ordinal: 2, provision_type: "section", number: "3", heading: "3 Brand new", anchor: "3-brand-new", markdown: "## 3 Brand new\n\nNewly inserted." },
+    ];
   }
 
   async getProvision(versionId: string, anchor: string): Promise<Row | null> {
@@ -262,3 +297,50 @@ describe("read api worker", () => {
     const bad = await app.request("/documents?sort=oldest", {}, testEnv);
     expect(bad.status).toBe(422);
   });
+
+describe("diff endpoint", () => {
+  const fromId = "point-in-time:2020-01-01:ukpga/2026/14";
+  const toId = "point-in-time:2026-05-05:ukpga/2026/14";
+
+  it("aligns provisions and classifies changes", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      `/diff?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`,
+      {},
+      testEnv,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["document_id"]).toBe("ukpga/2026/14");
+    expect(body["summary"]).toEqual({ added: 1, removed: 1, changed: 1, unchanged: 0 });
+    const entries = body["entries"] as Record<string, unknown>[];
+    expect(entries.map((entry) => entry["status"])).toEqual(["changed", "removed", "added"]);
+    const changed = entries[0]!;
+    expect(changed["from_markdown"]).toContain("£10 billion");
+    expect(changed["to_markdown"]).toContain("£20 billion");
+  });
+
+  it("rejects versions from different documents", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      `/diff?from=${encodeURIComponent(toId)}&to=${encodeURIComponent(
+        "point-in-time:2026-05-05:ukpga/2026/15",
+      )}`,
+      {},
+      testEnv,
+    );
+    expect(response.status).toBe(422);
+  });
+
+  it("returns 404 for unknown versions", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      `/diff?from=nope&to=${encodeURIComponent(toId)}`,
+      {},
+      testEnv,
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("requires both version ids", async () => {
+    const response = await appWith(new FakeRepository()).request("/diff?from=x", {}, testEnv);
+    expect(response.status).toBe(422);
+  });
+});

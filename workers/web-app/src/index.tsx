@@ -6,6 +6,7 @@ import { LEGISLATION_TYPE_FILTER_KEYS, buildFilters, pageUrl, parseListParams } 
 import { renderMarkdown } from "./markdown";
 import { buildTimeline } from "./timeline";
 import { DetailPage } from "./pages/detail";
+import { DiffPage } from "./pages/diff";
 import { LandingPage } from "./pages/landing";
 import { ContentPartial, FilesPartial, ProvisionsPartial } from "./pages/partials";
 import { FEED_PAGE_SIZE, FeedItems, RecentPage } from "./pages/recent";
@@ -60,6 +61,24 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
     const params = parseListParams(c.req.url);
     const results = await fetchResults(c.get("api"), params.apiParams, params.limit, params.offset);
     return c.html(<Results {...results} />);
+  });
+
+  app.get("/diff", async (c) => {
+    const fromId = c.req.query("from") ?? "";
+    const toId = c.req.query("to") ?? "";
+    if (fromId === "" || toId === "") {
+      return c.html(<DiffPage document={null} diff={null} error="Pick two versions to compare." />);
+    }
+    const api = c.get("api");
+    try {
+      const diff = await api.getDiff(fromId, toId);
+      const document = await api
+        .getDocument(String(diff["document_id"] ?? ""))
+        .catch(() => null);
+      return c.html(<DiffPage document={document} diff={diff} error={null} />);
+    } catch (error) {
+      return c.html(<DiffPage document={null} diff={null} error={String(error)} />);
+    }
   });
 
   app.get("/documents/*", async (c) => {

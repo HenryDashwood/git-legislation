@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,10 @@ NAMESPACES = {
     "ukm": "http://www.legislation.gov.uk/namespaces/metadata",
 }
 CONVERSION_LOG_INTERVAL = 500
+SPACE_BEFORE_PUNCTUATION_RE = re.compile(r" +([,;:)\]])")
+# A full stop only loses its leading space when it is not part of a ". . ."
+# omission sequence: the dot must not be preceded or followed by another dot.
+SPACE_BEFORE_SENTENCE_DOT_RE = re.compile(r"(?<![.\s]) +\.(?!\s*\.)")
 
 
 @dataclass(frozen=True)
@@ -499,7 +504,12 @@ def _numbered_paragraph_lines(paragraph: ElementTree.Element) -> list[str]:
 
 
 def _element_text(element: ElementTree.Element) -> str:
-    return " ".join("".join(element.itertext()).split())
+    text = " ".join("".join(element.itertext()).split())
+    # Upstream serves the same CLML both compact and pretty-printed across
+    # expression dates; indentation inside inline amendment markup would
+    # otherwise surface as "(1)(d) ," style spaces and pollute version diffs.
+    text = SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", text)
+    return SPACE_BEFORE_SENTENCE_DOT_RE.sub(".", text)
 
 
 def _local_name(tag: str) -> str:
