@@ -6,6 +6,7 @@ import { LEGISLATION_TYPE_FILTER_KEYS, buildFilters, pageUrl, parseListParams } 
 import { renderMarkdown } from "./markdown";
 import { buildTimeline } from "./timeline";
 import { DetailPage } from "./pages/detail";
+import { ChangesetPage } from "./pages/changeset";
 import { DiffPage } from "./pages/diff";
 import { LandingPage } from "./pages/landing";
 import { ContentPartial, FilesPartial, ProvisionsPartial } from "./pages/partials";
@@ -78,6 +79,19 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
       return c.html(<DiffPage document={document} diff={diff} error={null} />);
     } catch (error) {
       return c.html(<DiffPage document={null} diff={null} error={String(error)} />);
+    }
+  });
+
+  app.get("/changesets/*", async (c) => {
+    const documentId = decodeURIComponent(c.req.path.slice("/changesets/".length)).replace(
+      /^\/+|\/+$/g,
+      "",
+    );
+    try {
+      const changeset = await c.get("api").getChangeset(documentId);
+      return c.html(<ChangesetPage changeset={changeset} error={null} />);
+    } catch (error) {
+      return c.html(<ChangesetPage changeset={null} error={String(error)} />);
     }
   });
 

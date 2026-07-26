@@ -1090,3 +1090,53 @@ a.timeline-row:focus-visible {
   border-radius: 4px;
   margin-bottom: 0.5rem;
 }
+
+/* ---------- Effect attribution ---------- */
+
+.diff-attribution {
+  border-left: 2px solid var(--accent);
+  border-radius: 0;
+  padding: 0.35rem 0 0.35rem 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.diff-attribution p {
+  margin: 0 0 0.25rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.diff-attribution p:last-child {
+  margin-bottom: 0;
+}
+
+.diff-attribution-type {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.diff-attribution-date {
+  color: var(--muted);
+}
+
+.diff-unattached {
+  margin-top: 1.5rem;
+}
+
+.changeset-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.changeset-group-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.changeset-absent {
+  color: var(--historic);
+}

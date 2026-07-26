@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { createApp, type Env } from "../src/index";
-import type { DocumentListFilters, Repository, Row } from "../src/types";
+import type { DocumentListFilters, EffectFilters, Repository, Row } from "../src/types";
 
 const DOCUMENT: Row = {
   id: "ukpga/2026/14",
@@ -113,6 +113,54 @@ class FakeRepository implements Repository {
     return [
       { ordinal: 1, provision_type: "section", number: "1", heading: "1 Limit", anchor: "1-limit", markdown: "## 1 Limit\n\nThe limit is £20 billion." },
       { ordinal: 2, provision_type: "section", number: "3", heading: "3 Brand new", anchor: "3-brand-new", markdown: "## 3 Brand new\n\nNewly inserted." },
+    ];
+  }
+
+  async listEffects(filters: EffectFilters): Promise<Row[]> {
+    this.calls["listEffects"] = filters;
+    return [
+      {
+        id: "key-abc",
+        effect_type: "words substituted",
+        textual_kind: "T",
+        applied: true,
+        prospective: false,
+        in_force_date: "2026-03-01",
+        affecting_document_id: "ukpga/2025/31",
+        affecting_title: "Border Security, Asylum and Immigration Act 2025",
+        affecting_provisions: "s. 21(9)(b)",
+        affected_section_numbers: ["1"],
+        affected_provision_kinds: ["section"],
+      },
+      {
+        id: "key-unattached",
+        effect_type: "words omitted",
+        textual_kind: "T",
+        applied: true,
+        prospective: false,
+        in_force_date: "2026-04-01",
+        affecting_document_id: "ukpga/2025/31",
+        affected_section_numbers: ["99"],
+        affected_provision_kinds: ["section"],
+      },
+    ];
+  }
+
+  async summarizeChangeset(affectingDocumentId: string): Promise<Row[]> {
+    this.calls["summarizeChangeset"] = affectingDocumentId;
+    if (affectingDocumentId !== "ukpga/2025/31") {
+      return [];
+    }
+    return [
+      {
+        affected_document_id: "ukpga/2026/14",
+        affected_title: "Industry and Exports (Financial Assistance) Act 2026",
+        effect_count: 3,
+        textual_count: 2,
+        applied_count: 3,
+        prospective_count: 0,
+        in_corpus: true,
+      },
     ];
   }
 
@@ -342,5 +390,105 @@ describe("diff endpoint", () => {
   it("requires both version ids", async () => {
     const response = await appWith(new FakeRepository()).request("/diff?from=x", {}, testEnv);
     expect(response.status).toBe(422);
+  });
+});
+
+describe("percent-encoded path ids", () => {
+  it("resolves a version id whose colons are encoded", async () => {
+    const repository = new FakeRepository();
+    const encoded = encodeURIComponent(String(VERSION["id"]));
+    const response = await appWith(repository).request(`/versions/${encoded}/provisions`, {}, testEnv);
+
+    expect(response.status).toBe(200);
+    expect(repository.calls["listProvisions"]).toBe(VERSION["id"]);
+  });
+
+  it("resolves a document id whose slashes are encoded", async () => {
+    const repository = new FakeRepository();
+    const response = await appWith(repository).request("/documents/ukpga%2F2026%2F14", {}, testEnv);
+
+    expect(response.status).toBe(200);
+    expect(repository.calls["getDocument"]).toBe("ukpga/2026/14");
+  });
+
+  it("does not throw on a malformed escape sequence", async () => {
+    const response = await appWith(new FakeRepository()).request("/documents/ukpga%2", {}, testEnv);
+
+    expect(response.status).toBe(404);
+  });
+});
+
+describe("effects on diffs and changesets", () => {
+  const fromId = "point-in-time:2020-01-01:ukpga/2026/14";
+  const toId = "point-in-time:2026-05-05:ukpga/2026/14";
+
+  it("attaches an effect only to a provision that really changed", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      `/diff?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`,
+      {},
+      testEnv,
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    const entries = body["entries"] as Record<string, unknown>[];
+    const changed = entries.find((entry) => entry["status"] === "changed")!;
+    const attached = changed["effects"] as Record<string, unknown>[];
+
+    expect(attached).toHaveLength(1);
+    expect(attached[0]?.["id"]).toBe("key-abc");
+  });
+
+  it("returns effects it could not pin separately rather than guessing", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      `/diff?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`,
+      {},
+      testEnv,
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+    const unattached = body["unattached_effects"] as Record<string, unknown>[];
+
+    expect(unattached.map((effect) => effect["id"])).toEqual(["key-unattached"]);
+  });
+
+  it("bounds the effect window to the versions being compared", async () => {
+    const repository = new FakeRepository();
+    await appWith(repository).request(
+      `/diff?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`,
+      {},
+      testEnv,
+    );
+    expect(repository.calls["listEffects"]).toMatchObject({
+      documentId: "ukpga/2026/14",
+      direction: "affected",
+      inForceAfter: "2020-01-01",
+      inForceThrough: "2026-05-05",
+      textualOnly: true,
+    });
+  });
+
+  it("summarises a changeset by affected document", async () => {
+    const response = await appWith(new FakeRepository()).request(
+      "/changesets/ukpga/2025/31",
+      {},
+      testEnv,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body["summary"]).toMatchObject({ effects: 3, textual: 2, documents_affected: 1 });
+  });
+
+  it("404s a changeset with no recorded effects", async () => {
+    const response = await appWith(new FakeRepository()).request("/changesets/ukpga/1900/1", {}, testEnv);
+    expect(response.status).toBe(404);
+  });
+
+  it("lists effects for a document", async () => {
+    const repository = new FakeRepository();
+    const response = await appWith(repository).request(
+      "/documents/ukpga/2026/14/effects?direction=affecting",
+      {},
+      testEnv,
+    );
+    expect(response.status).toBe(200);
+    expect(repository.calls["listEffects"]).toMatchObject({ direction: "affecting" });
   });
 });

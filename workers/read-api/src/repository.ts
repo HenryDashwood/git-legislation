@@ -1,7 +1,25 @@
 /** Read-only SQL repository, ported from src/git_legislation_api/repositories.py. */
 
 import type { Sql } from "postgres";
-import type { DocumentListFilters, Repository, Row } from "./types";
+import type { DocumentListFilters, EffectFilters, Repository, Row } from "./types";
+
+const EFFECT_COLUMNS = `
+  e.id,
+  e.effect_type,
+  e.textual_kind,
+  e.applied,
+  e.prospective,
+  e.in_force_date,
+  e.in_force_qualification,
+  e.commencement_authority,
+  e.commencing_document_id,
+  e.affected_document_id,
+  e.affected_title,
+  e.affected_provisions,
+  e.affecting_document_id,
+  e.affecting_title,
+  e.affecting_provisions
+`;
 
 const DOCUMENT_COLUMNS = `
   d.id,
@@ -159,6 +177,64 @@ export class PostgresRepository implements Repository {
       order by ordinal
       `,
       [versionId],
+    );
+  }
+
+  async listEffects(filters: EffectFilters): Promise<Row[]> {
+    const column = filters.direction === "affecting" ? "affecting_document_id" : "affected_document_id";
+    // affected_section_numbers lets the caller line an effect up with a
+    // provision without a second query per effect.
+    return await this.sql.unsafe(
+      `
+      select ${EFFECT_COLUMNS},
+        (
+          select array_agg(distinct ep.section_number)
+          from effect_provisions ep
+          where ep.effect_id = e.id and ep.side = 'affected' and ep.section_number is not null
+        ) as affected_section_numbers,
+        (
+          select array_agg(distinct ep.provision_kind)
+          from effect_provisions ep
+          where ep.effect_id = e.id and ep.side = 'affected' and ep.provision_kind is not null
+        ) as affected_provision_kinds
+      from effects e
+      where e.${column} = $1
+        and ($2::date is null or e.in_force_date > $2)
+        and ($3::date is null or e.in_force_date <= $3)
+        and ($4::boolean is not true or e.textual_kind = 'T')
+      order by e.in_force_date desc nulls last, e.id
+      limit $5
+      `,
+      [
+        filters.documentId,
+        filters.inForceAfter ?? null,
+        filters.inForceThrough ?? null,
+        filters.textualOnly ?? false,
+        filters.limit ?? 500,
+      ],
+    );
+  }
+
+  async summarizeChangeset(affectingDocumentId: string): Promise<Row[]> {
+    return await this.sql.unsafe(
+      `
+      select
+        e.affected_document_id,
+        coalesce(max(e.affected_title), max(d.title)) as affected_title,
+        count(*)::int as effect_count,
+        count(*) filter (where e.textual_kind = 'T')::int as textual_count,
+        count(*) filter (where e.applied)::int as applied_count,
+        count(*) filter (where e.prospective)::int as prospective_count,
+        min(e.in_force_date) as first_in_force,
+        max(e.in_force_date) as last_in_force,
+        (d.id is not null) as in_corpus
+      from effects e
+      left join documents d on d.id = e.affected_document_id
+      where e.affecting_document_id = $1
+      group by e.affected_document_id, d.id
+      order by effect_count desc, e.affected_document_id
+      `,
+      [affectingDocumentId],
     );
   }
 

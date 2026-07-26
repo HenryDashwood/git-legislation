@@ -3,7 +3,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { createSql } from "./db";
-import { computeProvisionDiff } from "./diff";
+import { attachEffects, computeProvisionDiff } from "./diff";
 import { PostgresRepository } from "./repository";
 import { LEGISLATION_TYPE_CODES, type Repository } from "./types";
 
@@ -109,6 +109,19 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
       const documentId = cleanPathId(tail.slice(0, -"/versions".length));
       return c.json({ items: await repository.listVersions(documentId) });
     }
+    if (tail.endsWith("/effects")) {
+      const documentId = cleanPathId(tail.slice(0, -"/effects".length));
+      const direction = c.req.query("direction") ?? "affected";
+      if (direction !== "affected" && direction !== "affecting") {
+        return c.json({ detail: "direction must be affected or affecting" }, 422);
+      }
+      const items = await repository.listEffects({
+        documentId,
+        direction,
+        textualOnly: parseBoolParam(c.req.query("textual_only")) === true,
+      });
+      return c.json({ items });
+    }
     const document = await repository.getDocument(tail);
     if (document === null) {
       return c.json({ detail: "Document not found" }, 404);
@@ -139,12 +152,53 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
       repository.listProvisionTexts(toId),
     ]);
     const diff = computeProvisionDiff(fromProvisions, toProvisions);
+
+    // Effects whose in-force date falls in the window this diff covers are the
+    // candidates to explain it.
+    const documentId = String(fromVersion["document_id"]);
+    const effects = await repository.listEffects({
+      documentId,
+      direction: "affected",
+      inForceAfter: asDate(fromVersion["snapshot_date"]),
+      inForceThrough: asDate(toVersion["snapshot_date"]),
+      textualOnly: true,
+    });
+    const { entries, unattached } = attachEffects(diff.entries, effects);
+
     return c.json({
-      document_id: fromVersion["document_id"],
+      document_id: documentId,
       from: fromVersion,
       to: toVersion,
       summary: diff.summary,
-      entries: diff.entries,
+      entries,
+      unattached_effects: unattached,
+    });
+  });
+
+  app.get("/changesets/*", async (c) => {
+    const affectingDocumentId = cleanPathId(c.req.path.slice("/changesets/".length));
+    if (affectingDocumentId === "") {
+      return c.json({ detail: "A changeset needs an affecting document id" }, 422);
+    }
+    const repository = c.get("repository");
+    const groups = await repository.summarizeChangeset(affectingDocumentId);
+    if (groups.length === 0) {
+      return c.json({ detail: "No effects recorded for this instrument" }, 404);
+    }
+    const document = await repository.getDocument(affectingDocumentId).catch(() => null);
+    const total = (key: string) => groups.reduce((sum, group) => sum + Number(group[key] ?? 0), 0);
+    return c.json({
+      affecting_document_id: affectingDocumentId,
+      affecting_title:
+        document?.["title"] ?? groups.find((group) => group["affecting_title"])?.["affecting_title"] ?? null,
+      summary: {
+        effects: total("effect_count"),
+        textual: total("textual_count"),
+        applied: total("applied_count"),
+        prospective: total("prospective_count"),
+        documents_affected: groups.length,
+      },
+      groups,
     });
   });
 
@@ -223,8 +277,29 @@ async function serveObject(
   });
 }
 
+/**
+ * Trim slashes and percent-decode a path-embedded id.
+ *
+ * Version ids contain colons ("point-in-time:2026-05-05:ukpga/1971/77"). Raw
+ * colons are legal in a path segment, but a correctly-encoded client sends
+ * "%3A", and without decoding those ids silently matched nothing.
+ */
+function asDate(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+}
+
 function cleanPathId(value: string): string {
-  return value.replace(/^\/+|\/+$/g, "");
+  const trimmed = value.replace(/^\/+|\/+$/g, "");
+  try {
+    return decodeURIComponent(trimmed);
+  } catch {
+    // Malformed escape sequence: fall back to the raw value so the lookup
+    // simply misses rather than throwing a 500.
+    return trimmed;
+  }
 }
 
 function parseIntParam(value: string | undefined): number | null | undefined {

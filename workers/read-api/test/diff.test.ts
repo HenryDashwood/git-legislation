@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeProvisionDiff } from "../src/diff";
+import { attachEffects, computeProvisionDiff } from "../src/diff";
 
 const provision = (number: string, markdown: string, type = "section") => ({
   ordinal: 0,
@@ -73,4 +73,37 @@ it("ignores space before a sentence dot but respects omission dots", () => {
     [provision("1", "sections 25A. apply")],
   );
   expect(omission.summary["changed"]).toBe(1);
+});
+
+describe("attachEffects", () => {
+  const changedEntry = { status: "changed", provision_type: "section", number: "24", heading: "24" };
+  const unchangedEntry = { status: "unchanged", provision_type: "section", number: "3", heading: "3" };
+
+  it("accepts a postgres array literal as well as a parsed array", () => {
+    const literal = attachEffects([{ ...changedEntry }] as never, [
+      { id: "e1", affected_section_numbers: "{24}", affected_provision_kinds: "{section}" },
+    ]);
+    const parsed = attachEffects([{ ...changedEntry }] as never, [
+      { id: "e2", affected_section_numbers: ["24"], affected_provision_kinds: ["section"] },
+    ]);
+
+    expect(literal.unattached).toHaveLength(0);
+    expect(parsed.unattached).toHaveLength(0);
+  });
+
+  it("never attaches to an unchanged provision", () => {
+    const result = attachEffects([{ ...unchangedEntry }] as never, [
+      { id: "e3", affected_section_numbers: ["3"], affected_provision_kinds: ["section"] },
+    ]);
+
+    expect(result.unattached.map((e) => e["id"])).toEqual(["e3"]);
+  });
+
+  it("does not cross schedules with sections of the same number", () => {
+    const result = attachEffects([{ ...changedEntry, provision_type: "schedule" }] as never, [
+      { id: "e4", affected_section_numbers: ["24"], affected_provision_kinds: ["section"] },
+    ]);
+
+    expect(result.unattached).toHaveLength(1);
+  });
 });

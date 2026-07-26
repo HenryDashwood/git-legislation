@@ -81,6 +81,8 @@ export function DiffPage(props: DiffProps) {
           ) : null}
         </section>
       )}
+
+      <UnattachedEffects effects={(diff["unattached_effects"] as Json[] | null) ?? []} />
     </Layout>
   );
 }
@@ -90,12 +92,39 @@ function DiffEntryCard({ entry }: { entry: Json }) {
   const heading = String(entry["heading"] ?? entry["number"] ?? "Provision");
   const fromMarkdown = String(entry["from_markdown"] ?? "");
   const toMarkdown = String(entry["to_markdown"] ?? "");
+  const effects = (entry["effects"] as Json[] | undefined) ?? [];
   return (
     <article class={`panel diff-entry diff-${status}`}>
       <header class="diff-entry-header">
         <span class={`diff-badge diff-badge-${status}`}>{status}</span>
         <h2>{heading}</h2>
       </header>
+      {effects.length > 0 ? (
+        <div class="diff-attribution">
+          {effects.map((effect) => (
+            <p>
+              <span class="diff-attribution-type">{String(effect["effect_type"] ?? "amended")}</span> by{" "}
+              {effect["affecting_document_id"] ? (
+                <a href={`/changesets/${effect["affecting_document_id"]}`}>
+                  {String(effect["affecting_title"] ?? effect["affecting_document_id"])}
+                </a>
+              ) : (
+                String(effect["affecting_title"] ?? "an unrecorded instrument")
+              )}
+              {effect["affecting_provisions"] ? <> {String(effect["affecting_provisions"])}</> : null}
+              {effect["in_force_date"] ? (
+                <span class="diff-attribution-date"> · in force {String(effect["in_force_date"])}</span>
+              ) : null}
+              {effect["commencement_authority"] ? (
+                <span class="diff-attribution-date">
+                  {" "}
+                  · commenced by {String(effect["commencement_authority"])}
+                </span>
+              ) : null}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {status === "changed" ? (
         <pre
           class="diff-text"
@@ -107,6 +136,39 @@ function DiffEntryCard({ entry }: { entry: Json }) {
         <pre class="diff-text diff-text-removed">{fromMarkdown}</pre>
       )}
     </article>
+  );
+}
+
+/**
+ * Amendments the register records in this window that we could not tie to a
+ * changed provision. Shown as a plain list rather than pinned to any text: the
+ * register and the revised text sometimes disagree, and a wrong attribution is
+ * worse than an unplaced one.
+ */
+function UnattachedEffects({ effects }: { effects: Json[] }) {
+  if (effects.length === 0) {
+    return null;
+  }
+  return (
+    <section class="panel diff-unattached">
+      <h2>Other recorded amendments in this window</h2>
+      <p class="metadata">
+        The Changes to Legislation register lists these for the same period, but we could not match
+        them to a provision whose text changed between these two versions.
+      </p>
+      <ul class="compact-list">
+        {effects.map((effect) => (
+          <li>
+            <strong>{String(effect["affected_provisions"] ?? "unspecified provision")}</strong>{" "}
+            {String(effect["effect_type"] ?? "amended")}
+            {effect["affecting_title"] ? <> by {String(effect["affecting_title"])}</> : null}
+            {effect["in_force_date"] ? (
+              <span class="metadata"> · in force {String(effect["in_force_date"])}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -13,11 +13,78 @@ export interface DiffEntry {
   from_heading?: string | null;
   from_markdown?: string;
   to_markdown?: string;
+  /** Effects that explain this change, attached only when the text really differs. */
+  effects?: Row[];
 }
 
 export interface ProvisionDiff {
   summary: Record<DiffStatus, number>;
   entries: DiffEntry[];
+}
+
+/**
+ * Attach effects to the diff entries they explain, confirmation-first.
+ *
+ * An effect is only pinned to a provision when that provision actually changed
+ * between the two versions: the amendment register and the revised text do not
+ * always agree, and a confident-but-wrong attribution is worse than none. What
+ * cannot be pinned is returned separately so the caller can still show it as a
+ * recorded amendment without claiming which words it touched.
+ */
+export function attachEffects(
+  entries: DiffEntry[],
+  effects: Row[],
+): { entries: DiffEntry[]; unattached: Row[] } {
+  const changedByKey = new Map<string, DiffEntry[]>();
+  for (const entry of entries) {
+    if (entry.status === "unchanged" || entry.number === null) {
+      continue;
+    }
+    const key = `${entry.provision_type ?? ""}|${entry.number}`;
+    const bucket = changedByKey.get(key);
+    if (bucket === undefined) {
+      changedByKey.set(key, [entry]);
+    } else {
+      bucket.push(entry);
+    }
+  }
+
+  const unattached: Row[] = [];
+  for (const effect of effects) {
+    const numbers = asStringArray(effect["affected_section_numbers"]);
+    const kinds = asStringArray(effect["affected_provision_kinds"]);
+    let attached = false;
+    for (const number of numbers) {
+      for (const kind of kinds.length > 0 ? kinds : [""]) {
+        for (const entry of changedByKey.get(`${kind}|${number}`) ?? []) {
+          (entry.effects ??= []).push(effect);
+          attached = true;
+        }
+      }
+    }
+    if (!attached) {
+      unattached.push(effect);
+    }
+  }
+  return { entries, unattached };
+}
+
+/**
+ * Postgres arrays reach us either already parsed or as a literal like "{24,3}"
+ * depending on how the driver types an aggregate column, so accept both.
+ */
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+  if (typeof value === "string" && value.startsWith("{") && value.endsWith("}")) {
+    return value
+      .slice(1, -1)
+      .split(",")
+      .map((item) => item.replace(/^"|"$/g, "").trim())
+      .filter((item) => item !== "");
+  }
+  return [];
 }
 
 /**

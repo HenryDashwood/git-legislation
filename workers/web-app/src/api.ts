@@ -49,6 +49,14 @@ export class ReadApiClient {
     return this.getJson(`/diff?${params.toString()}`);
   }
 
+  async getChangeset(affectingDocumentId: string): Promise<Json> {
+    return this.getJson(`/changesets/${affectingDocumentId}`);
+  }
+
+  async listEffects(documentId: string, direction: "affected" | "affecting" = "affected"): Promise<Json> {
+    return this.getJson(`/documents/${documentId}/effects?direction=${direction}`);
+  }
+
   async listProvisions(versionId: string): Promise<Json> {
     return this.getJson(`/versions/${versionId}/provisions`);
   }
