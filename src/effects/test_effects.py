@@ -126,6 +126,8 @@ def test_textual_kind_separates_textual_non_textual_and_commencement() -> None:
     assert textual_kind("applied") == "NT"
     assert textual_kind("power to amend") == "NT"
     assert textual_kind("commencement order") == "CO"
+    assert textual_kind("coming into force") == "CO"
+    assert textual_kind("in force") == "CO"
     assert textual_kind("") == "UN"
     assert textual_kind("   ") == "UN"
 

@@ -369,3 +369,21 @@ class RecordingCursor:
 
     def fetchone(self) -> tuple[Any, ...] | None:
         return self.row
+
+
+def test_split_provisions_types_and_numbers_schedule_headings(tmp_path: Path) -> None:
+    markdown = MARKDOWN + "\n## SCHEDULE 5 Transitional provision\n\nParagraph text.\n"
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(markdown)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    schedule = parse_markdown_document(ref).provisions[-1]
+
+    assert schedule.heading == "SCHEDULE 5 Transitional provision"
+    assert schedule.number == "5"

@@ -132,10 +132,49 @@ def document_sections(xml_path: Path) -> list[DocumentSection]:
 
 
 def document_sections_from_root(root: ElementTree.Element) -> list[DocumentSection]:
+    sections: list[DocumentSection] = []
     body = root.find(".//leg:Body", namespaces=NAMESPACES)
-    if body is None:
-        return []
-    return _body_sections(body)
+    if body is not None:
+        sections.extend(_body_sections(body))
+    # Schedules sit in a sibling container to Body, not inside it, so they need
+    # their own walk — they carry a large share of amending activity and were
+    # previously dropped from the rendered text entirely.
+    sections.extend(_schedule_sections(root))
+    return sections
+
+
+def _schedule_sections(root: ElementTree.Element) -> list[DocumentSection]:
+    """One section per Schedule, keeping its internal structure as nested headings.
+
+    Effects reference schedule provisions by schedule number ("Sch. 5 para. 3"),
+    so a schedule is the unit that joins to the effects record; its paragraphs
+    become third-level headings within it.
+    """
+    sections: list[DocumentSection] = []
+    for schedule in root.findall(".//leg:Schedules/leg:Schedule", namespaces=NAMESPACES):
+        number_element = schedule.find("leg:Number", namespaces=NAMESPACES)
+        title_element = schedule.find("leg:TitleBlock/leg:Title", namespaces=NAMESPACES)
+        body = schedule.find("leg:ScheduleBody", namespaces=NAMESPACES)
+
+        lines: list[str] = []
+        if body is not None:
+            for inner in _body_sections(body):
+                heading = " ".join(part for part in [inner.number, inner.title] if part)
+                if heading:
+                    lines.append(f"### {heading}")
+                lines.extend(inner.lines)
+            if not lines:
+                lines = _paragraph_lines(body) or [_element_text(body)]
+
+        sections.append(
+            DocumentSection(
+                number=_element_text(number_element) if number_element is not None else "SCHEDULE",
+                title=_element_text(title_element) if title_element is not None else "",
+                lines=[line for line in lines if line],
+                commentary_refs=_commentary_refs(number_element),
+            )
+        )
+    return sections
 
 
 def document_commentaries(xml_path: Path) -> dict[str, str]:

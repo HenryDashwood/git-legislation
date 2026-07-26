@@ -16,6 +16,7 @@ DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
 PUBLISH_LOG_INTERVAL = 1000
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+SCHEDULE_HEADING_RE = re.compile(r"^SCHEDULES?\.?\s+([A-Za-z]?\d+[A-Za-z]?)\b", re.IGNORECASE)
 # Point-in-time CLML embeds the request date in legislation.gov.uk URIs
 # (DocumentURI, PDF alternatives), so identical content fetched under two
 # --at dates hashes differently unless those date segments are stripped.
@@ -1129,6 +1130,11 @@ def _provision_type(provision: ProvisionRecord) -> str:
 
 
 def _heading_number(heading: str) -> str | None:
+    # "SCHEDULE 5 Title" -> "5", so a schedule provision carries the number that
+    # effects records reference ("Sch. 5 para. 3").
+    schedule_match = SCHEDULE_HEADING_RE.match(heading)
+    if schedule_match is not None:
+        return schedule_match.group(1)
     match = re.match(r"^([A-Za-z]?\d+[A-Za-z]?|\([^)]+\))\b", heading)
     return match.group(1) if match else None
 

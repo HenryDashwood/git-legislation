@@ -416,3 +416,86 @@ def test_element_text_strips_space_before_sentence_dot_but_not_omission_dots() -
     )
 
     assert _element_text(element) == "the Immigration Act 2016. But sections 25A . . . apply."
+
+
+SCHEDULE_XML = """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Primary>
+    <Body>
+      <P1group>
+        <Title>Opening section</Title>
+        <P1><Pnumber>1</Pnumber><P1para><Text>Body text.</Text></P1para></P1>
+      </P1group>
+    </Body>
+    <Schedules>
+      <Title>Schedules</Title>
+      <Schedule>
+        <Number>SCHEDULE 1</Number>
+        <TitleBlock><Title>Disability: supplementary provision</Title></TitleBlock>
+        <ScheduleBody>
+          <Part>
+            <Title>Part 1 Determination of disability</Title>
+            <P1group>
+              <Title>Certain medical conditions</Title>
+              <P1><Pnumber>2</Pnumber><P1para><Text>Cancer is a disability.</Text></P1para></P1>
+            </P1group>
+          </Part>
+        </ScheduleBody>
+      </Schedule>
+      <Schedule>
+        <Number>SCHEDULE 2</Number>
+        <TitleBlock><Title>Services and public functions</Title></TitleBlock>
+        <ScheduleBody><P><Text>Flat schedule text.</Text></P></ScheduleBody>
+      </Schedule>
+    </Schedules>
+  </Primary>
+</Legislation>
+"""
+
+
+def test_document_sections_includes_schedules_after_body(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(SCHEDULE_XML)
+
+    sections = document_sections(xml_path)
+
+    assert [(section.number, section.title) for section in sections] == [
+        ("1", "Opening section"),
+        ("SCHEDULE 1", "Disability: supplementary provision"),
+        ("SCHEDULE 2", "Services and public functions"),
+    ]
+
+
+def test_schedule_section_keeps_internal_structure_as_nested_headings(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(SCHEDULE_XML)
+
+    schedule = document_sections(xml_path)[1]
+
+    assert schedule.lines == ["### 2 Certain medical conditions", "Cancer is a disability."]
+
+
+def test_schedule_section_falls_back_to_flat_body_text(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(SCHEDULE_XML)
+
+    assert document_sections(xml_path)[2].lines == ["Flat schedule text."]
+
+
+def test_render_document_markdown_emits_schedule_headings() -> None:
+    xml = SCHEDULE_XML.replace(
+        "<Primary>",
+        """<ukm:Metadata xmlns:dc="http://purl.org/dc/elements/1.1/"
+             xmlns:ukm="http://www.legislation.gov.uk/namespaces/metadata">
+             <dc:title>Equality Act 2010</dc:title>
+           </ukm:Metadata>
+           <Primary>""",
+    ).replace("<Legislation ", '<Legislation DocumentURI="http://www.legislation.gov.uk/ukpga/2010/15" ')
+
+    markdown = render_document_markdown_from_xml(xml)
+
+    # The heading must start with "SCHEDULE" so publishing types the provision
+    # as a schedule rather than a section.
+    assert "## SCHEDULE 1 Disability: supplementary provision" in markdown
+    assert "## SCHEDULE 2 Services and public functions" in markdown
+    assert "### 2 Certain medical conditions" in markdown

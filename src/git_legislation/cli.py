@@ -12,7 +12,9 @@ import typer
 from converters.clmltomarkdown import render_document_markdown_from_xml
 from effects import (
     EffectsIngestReport,
+    confirm_effects_against_diffs,
     record_effects_cursor,
+    render_effect_confirmations,
     render_effects_ingest_report,
     summarize_effect_coverage,
     upsert_effects,
@@ -608,6 +610,38 @@ def effects_coverage_command(
         for index, value in enumerate((effects, textual, applied, matched)):
             totals[index] += value
     typer.echo(f"{'TOTAL':18} {totals[0]:>8} {totals[1]:>8} {totals[2]:>8} {totals[3]:>8}")
+
+
+@app.command("verify-effects")
+def verify_effects_command(
+    source_paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Legislation source paths to verify. Repeatable."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
+    ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+) -> None:
+    """Audit our text against the official amendment record.
+
+    For every applied textual effect with an in-force date, check that the
+    provision it names actually differs between the version before that date and
+    the version on or after it. A low confirmed rate points at missing text or a
+    bad provision join on our side, not at the upstream record.
+    """
+    paths = _source_paths_or_raise(source_paths, from_file)
+    database_url = _database_url_or_raise(database_url)
+    document_ids = ["/".join(document_ref_from_source_path(path).path) for path in paths]
+
+    with psycopg.connect(database_url) as connection:
+        confirmations = [confirm_effects_against_diffs(connection, document_id) for document_id in document_ids]
+
+    typer.echo(render_effect_confirmations(sorted(confirmations, key=lambda c: c.checkable, reverse=True)))
 
 
 @app.command("rerender-document-versions")

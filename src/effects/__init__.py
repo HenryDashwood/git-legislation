@@ -54,7 +54,10 @@ def textual_kind(effect_type: str) -> str:
     normalized = effect_type.strip().lower()
     if not normalized:
         return "UN"
-    if "commencement" in normalized or normalized.startswith("in force"):
+    # "coming into force" is the commonest of these and changes no words: it
+    # records a provision starting to have legal effect, so counting it as a
+    # textual amendment makes staged commencement look like a pipeline failure.
+    if "commencement" in normalized or "force" in normalized:
         return "CO"
     if normalized in NON_TEXTUAL_EFFECT_TYPES:
         return "NT"
@@ -174,6 +177,106 @@ def render_effects_ingest_report(report: EffectsIngestReport) -> str:
     return "\n".join(lines)
 
 
+CONFIRMATION_SQL = """
+with eff as (
+    select e.id, e.affected_document_id doc, e.in_force_date d,
+           ep.section_number num, ep.provision_kind kind
+    from effects e
+    join effect_provisions ep on ep.effect_id = e.id and ep.side = 'affected'
+    where e.affected_document_id = %s
+      and e.in_force_date is not null
+      and e.applied
+      and e.textual_kind = 'T'
+      and ep.section_number is not null
+),
+paired as (
+    select eff.*,
+      (select id from document_versions v
+        where v.document_id = eff.doc and v.snapshot_date < eff.d
+        order by v.snapshot_date desc limit 1) before_id,
+      (select id from document_versions v
+        where v.document_id = eff.doc and v.snapshot_date >= eff.d
+        order by v.snapshot_date asc limit 1) after_id
+    from eff
+)
+select
+  count(*)::int total,
+  count(*) filter (where before_id is null or after_id is null)::int outside_range,
+  count(*) filter (where before_id is not null and after_id is not null
+                     and (pb.markdown is null or pa.markdown is null))::int provision_absent,
+  count(*) filter (where pb.markdown is not null and pa.markdown is not null
+                     and pb.markdown <> pa.markdown)::int text_differs,
+  count(*) filter (where pb.markdown is not null and pa.markdown is not null
+                     and pb.markdown = pa.markdown)::int text_identical
+from paired
+left join provisions pb
+  on pb.version_id = paired.before_id and pb.number = paired.num and pb.provision_type = paired.kind
+left join provisions pa
+  on pa.version_id = paired.after_id and pa.number = paired.num and pa.provision_type = paired.kind
+"""
+
+
+@dataclass(frozen=True)
+class EffectConfirmation:
+    document_id: str
+    total: int
+    outside_range: int
+    provision_absent: int
+    text_differs: int
+    text_identical: int
+
+    @property
+    def checkable(self) -> int:
+        return self.text_differs + self.text_identical
+
+    @property
+    def confirmed_rate(self) -> float | None:
+        return self.text_differs / self.checkable if self.checkable else None
+
+
+def confirm_effects_against_diffs(
+    connection: psycopg.Connection[Any],
+    document_id: str,
+) -> EffectConfirmation:
+    """Check whether applied textual effects coincide with a real change in our text.
+
+    For each effect, compare the provision it names in the last version before
+    its in-force date against the first version on or after it. A high rate of
+    identical text means our text or the provision join is wrong, not that the
+    upstream record is: this is an independent audit of the diff pipeline
+    against the official amendment record.
+    """
+    row = connection.execute(CONFIRMATION_SQL, (document_id,)).fetchone()
+    total, outside_range, provision_absent, text_differs, text_identical = row or (0, 0, 0, 0, 0)
+    return EffectConfirmation(
+        document_id=document_id,
+        total=total,
+        outside_range=outside_range,
+        provision_absent=provision_absent,
+        text_differs=text_differs,
+        text_identical=text_identical,
+    )
+
+
+def render_effect_confirmations(confirmations: list[EffectConfirmation]) -> str:
+    lines = [f"{'document':18} {'checked':>8} {'confirmed':>10} {'identical':>10} {'absent':>7} {'rate':>6}"]
+    differs = identical = absent = 0
+    for confirmation in confirmations:
+        rate = confirmation.confirmed_rate
+        lines.append(
+            f"{confirmation.document_id:18} {confirmation.checkable:>8} {confirmation.text_differs:>10} "
+            f"{confirmation.text_identical:>10} {confirmation.provision_absent:>7} "
+            f"{f'{rate * 100:.0f}%' if rate is not None else 'n/a':>6}"
+        )
+        differs += confirmation.text_differs
+        identical += confirmation.text_identical
+        absent += confirmation.provision_absent
+    checkable = differs + identical
+    overall = f"{differs / checkable * 100:.0f}%" if checkable else "n/a"
+    lines.append(f"{'TOTAL':18} {checkable:>8} {differs:>10} {identical:>10} {absent:>7} {overall:>6}")
+    return "\n".join(lines)
+
+
 def summarize_effect_coverage(
     connection: psycopg.Connection[Any],
     document_ids: list[str],
@@ -193,6 +296,9 @@ def summarize_effect_coverage(
                 join provisions p
                   on p.document_id = e.affected_document_id
                  and p.number = ep.section_number
+                 -- Kind must agree: matching on number alone let an effect on
+                 -- "Sch. 5" resolve to section 5.
+                 and p.provision_type = ep.provision_kind
                 where ep.effect_id = e.id and ep.side = 'affected'
             ))::int as provision_matched
         from effects e

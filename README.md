@@ -270,7 +270,13 @@ legislation, thin for most secondary), so historic coverage is patchy by constru
     full-text CLML records; flag missing schedules, weak headings, table-heavy documents, and
     empty bodies.
   - Add representative snapshot tests across legislation types and eras.
-  - Improve handling of schedules, tables, forms, images, commentary, repeals, and prospective text.
+  - ~~Improve handling of schedules~~ Done for extraction: CLML keeps schedules in a `Schedules`
+    container sibling to `Body`, so the converter previously dropped them entirely — the corpus held
+    2.2M `section` provisions and zero `schedule` provisions. `document_sections_from_root` now walks
+    both, emitting one provision per schedule (the unit effects reference) with its parts and
+    paragraphs as `###` sub-headings. Still to do: tables, forms, images, and sub-paragraph precision
+    within a schedule.
+  - Improve handling of tables, forms, images, commentary, repeals, and prospective text.
   - After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from
     stored XML.
 
