@@ -1873,16 +1873,13 @@ def test_legislation_client_retries_432_pdf_rate_limit(monkeypatch) -> None:
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.time.sleep", sleep_calls.append)
     monkeypatch.setattr("fetchers.legislationdotgovdotuk.urlopen", fake_urlopen)
 
-    response = create_client(log=messages.append).get(
-        "https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf"
-    )
+    response = create_client(log=messages.append).get("https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf")
 
     assert response.status_code == 200
     assert calls == 2
     assert sleep_calls == [30.0]
     assert messages == [
-        "Rate limited fetching https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf; "
-        "waiting 30s before retry 1/5"
+        "Rate limited fetching https://www.legislation.gov.uk/uksi/1960/1/made/data.pdf; waiting 30s before retry 1/5"
     ]
 
 
@@ -1945,8 +1942,7 @@ def test_parse_publication_log_feed_skips_changes_content_type() -> None:
 
 def test_publication_log_feed_url_filters_to_published_xml_legislation() -> None:
     assert publication_log_feed_url("2026-07-16", page=3) == (
-        "https://www.legislation.gov.uk/update/2026-07-16/legislation/data.feed"
-        "?event=published&format=xml&page=3"
+        "https://www.legislation.gov.uk/update/2026-07-16/legislation/data.feed?event=published&format=xml&page=3"
     )
 
 

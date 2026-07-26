@@ -10,6 +10,13 @@ import psycopg
 import typer
 
 from converters.clmltomarkdown import render_document_markdown_from_xml
+from effects import (
+    EffectsIngestReport,
+    record_effects_cursor,
+    render_effects_ingest_report,
+    summarize_effect_coverage,
+    upsert_effects,
+)
 from fetchers.legislationdotgovdotuk import (
     POINT_IN_TIME_CORPUS_END_YEARS,
     POINT_IN_TIME_CORPUS_START_YEARS,
@@ -17,6 +24,7 @@ from fetchers.legislationdotgovdotuk import (
     create_client,
     document_ref_from_source_path,
     document_ref_xml_url,
+    fetch_document_effects,
     fetch_document_ref_xml,
     fetch_publication_day_events,
     fetch_year_document_refs,
@@ -417,15 +425,7 @@ def backfill_document_versions_command(
     present are skipped; identical consecutive expressions dedupe via the
     canonical content hash.
     """
-    paths = list(source_paths or [])
-    if from_file is not None:
-        for line in from_file.read_text().splitlines():
-            stripped = line.split("#", 1)[0].strip()
-            if stripped:
-                paths.append(stripped)
-    if not paths:
-        raise click.ClickException("Pass source paths or --from-file.")
-
+    paths = _source_paths_or_raise(source_paths, from_file)
     database_url = _database_url_or_raise(database_url)
     object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
     report = PublishReport(collection="point-in-time", database_path="Postgres")
@@ -497,8 +497,7 @@ def backfill_document_versions_command(
                     typer.echo(f"{source_path}: {index} of {len(missing)} versions ingested")
             connection.commit()
             typer.echo(
-                f"{source_path}: done ({report.created_versions} created, "
-                f"{report.reused_versions} reused so far)"
+                f"{source_path}: done ({report.created_versions} created, {report.reused_versions} reused so far)"
             )
         if publish_run_id is not None:
             finish_publish_run(connection, publish_run_id)
@@ -510,6 +509,105 @@ def backfill_document_versions_command(
         )
         return
     typer.echo(render_publish_report(report))
+
+
+@app.command("ingest-effects")
+def ingest_effects_command(
+    source_paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Legislation source paths, e.g. ukpga/1971/77. Repeatable."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
+    ] = None,
+    direction: Annotated[
+        str,
+        typer.Option("--direction", help="'affected' (changes to these) or 'affecting' (changes they made)."),
+    ] = "affected",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Report effect counts without writing."),
+    ] = False,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+) -> None:
+    """Ingest amendment effects for the given documents from the Changes to Legislation feeds.
+
+    Each effect records which instrument changed which provision, its type, the
+    commencement authority, and whether the revised text already reflects it.
+    Re-running is idempotent (upsert on the upstream EffectId).
+    """
+    if direction not in {"affected", "affecting"}:
+        raise click.ClickException("--direction must be 'affected' or 'affecting'.")
+    paths = _source_paths_or_raise(source_paths, from_file)
+    database_url = _database_url_or_raise(database_url)
+    report = EffectsIngestReport()
+
+    with create_client(log=typer.echo) as client, psycopg.connect(database_url) as connection:
+        for source_path in paths:
+            document = document_ref_from_source_path(source_path)
+            document_id = "/".join(document.path)
+            try:
+                effects = fetch_document_effects(
+                    client,
+                    source_path=document.path,
+                    direction=direction,
+                    log=typer.echo,
+                )
+            except Exception as error:
+                report.failures.append(f"{source_path}: {error}")
+                typer.echo(f"{source_path}: failed to fetch effects: {error}")
+                continue
+            report.documents += 1
+            report.fetched += len(effects)
+            typer.echo(f"{source_path}: {len(effects)} effects")
+            if dry_run:
+                continue
+            upsert_effects(connection, effects, report)
+            if direction == "affected":
+                record_effects_cursor(connection, document_id=document_id, effects=effects)
+            connection.commit()
+
+    typer.echo(render_effects_ingest_report(report))
+
+
+@app.command("effects-coverage")
+def effects_coverage_command(
+    source_paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Legislation source paths to summarise. Repeatable."),
+    ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
+    ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+) -> None:
+    """Report how many stored effects resolve to a local provision, per document.
+
+    A low match rate means either the provision-number join needs work or the
+    document's text is not deep enough to carry the amended provisions.
+    """
+    paths = _source_paths_or_raise(source_paths, from_file)
+    database_url = _database_url_or_raise(database_url)
+    document_ids = ["/".join(document_ref_from_source_path(path).path) for path in paths]
+
+    with psycopg.connect(database_url) as connection:
+        rows = summarize_effect_coverage(connection, document_ids=document_ids, log=typer.echo)
+
+    typer.echo(f"{'document':18} {'effects':>8} {'textual':>8} {'applied':>8} {'matched':>8}")
+    totals = [0, 0, 0, 0]
+    for document_id, effects, textual, applied, matched in rows:
+        typer.echo(f"{document_id:18} {effects:>8} {textual:>8} {applied:>8} {matched:>8}")
+        for index, value in enumerate((effects, textual, applied, matched)):
+            totals[index] += value
+    typer.echo(f"{'TOTAL':18} {totals[0]:>8} {totals[1]:>8} {totals[2]:>8} {totals[3]:>8}")
 
 
 @app.command("rerender-document-versions")
@@ -544,15 +642,7 @@ def rerender_document_versions_command(
     the same converter and diffs compare like with like. Follow with
     normalize-version-hashes to merge versions whose text became identical.
     """
-    paths = list(source_paths or [])
-    if from_file is not None:
-        for line in from_file.read_text().splitlines():
-            stripped = line.split("#", 1)[0].strip()
-            if stripped:
-                paths.append(stripped)
-    if not paths:
-        raise click.ClickException("Pass source paths or --from-file.")
-
+    paths = _source_paths_or_raise(source_paths, from_file)
     database_url = _database_url_or_raise(database_url)
     object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
     report = RerenderReport()
@@ -1276,6 +1366,18 @@ def render_corpus_counts(counts: CorpusCounts) -> str:
     lines.append(f"- object_store_files: {counts.object_count}")
     lines.append(f"- object_store_bytes: {counts.object_bytes}")
     return "\n".join(lines)
+
+
+def _source_paths_or_raise(source_paths: list[str] | None, from_file: Path | None) -> list[str]:
+    paths = list(source_paths or [])
+    if from_file is not None:
+        for line in from_file.read_text().splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            if stripped:
+                paths.append(stripped)
+    if not paths:
+        raise click.ClickException("Pass source paths or --from-file.")
+    return paths
 
 
 def _database_url_or_raise(database_url: str | None) -> str:

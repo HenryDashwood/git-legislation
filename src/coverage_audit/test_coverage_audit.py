@@ -80,7 +80,7 @@ def test_audit_point_in_time_coverage_counts_reports_and_local_files(tmp_path: P
                         "stage": "document",
                         "legislation_type": "uksi",
                         "error": "HTTP status 404",
-                    }
+                    },
                 ],
             }
         )
@@ -249,7 +249,7 @@ def test_render_point_in_time_failure_details_lists_fetch_and_conversion_failure
                         "number": 1,
                         "url": "https://www.legislation.gov.uk/uksi/2006/1/data.xml",
                         "error": "HTTP status 404",
-                    }
+                    },
                 ]
             }
         )

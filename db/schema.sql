@@ -147,6 +147,83 @@ CREATE TABLE public.documents (
 
 
 --
+-- Name: effect_provisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.effect_provisions (
+    id bigint NOT NULL,
+    effect_id text NOT NULL,
+    side text NOT NULL,
+    provision_kind text,
+    section_number text,
+    ref text,
+    uri text,
+    label text,
+    CONSTRAINT effect_provisions_side_check CHECK ((side = ANY (ARRAY['affected'::text, 'affecting'::text, 'commencing'::text])))
+);
+
+
+--
+-- Name: effect_provisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.effect_provisions_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: effect_provisions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.effect_provisions_id_seq OWNED BY public.effect_provisions.id;
+
+
+--
+-- Name: effects; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.effects (
+    id text NOT NULL,
+    uri text,
+    effect_type text NOT NULL,
+    textual_kind text,
+    applied boolean DEFAULT false NOT NULL,
+    requires_applied boolean DEFAULT false NOT NULL,
+    prospective boolean DEFAULT false NOT NULL,
+    in_force_date date,
+    in_force_qualification text,
+    commencing_document_id text,
+    commencement_authority text,
+    affected_document_id text,
+    affected_title text,
+    affected_provisions text,
+    affecting_document_id text,
+    affecting_title text,
+    affecting_provisions text,
+    comments text,
+    modified timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: effects_cursor; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.effects_cursor (
+    document_id text NOT NULL,
+    last_modified timestamp with time zone,
+    effect_count integer DEFAULT 0 NOT NULL,
+    refreshed_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: fetch_observations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -319,6 +396,13 @@ ALTER TABLE ONLY public.document_files ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: effect_provisions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.effect_provisions ALTER COLUMN id SET DEFAULT nextval('public.effect_provisions_id_seq'::regclass);
+
+
+--
 -- Name: fetch_observations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -362,6 +446,30 @@ ALTER TABLE ONLY public.document_versions
 
 ALTER TABLE ONLY public.documents
     ADD CONSTRAINT documents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: effect_provisions effect_provisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.effect_provisions
+    ADD CONSTRAINT effect_provisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: effects_cursor effects_cursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.effects_cursor
+    ADD CONSTRAINT effects_cursor_pkey PRIMARY KEY (document_id);
+
+
+--
+-- Name: effects effects_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.effects
+    ADD CONSTRAINT effects_pkey PRIMARY KEY (id);
 
 
 --
@@ -513,6 +621,41 @@ CREATE INDEX documents_type_year_number_idx ON public.documents USING btree (leg
 
 
 --
+-- Name: effect_provisions_effect_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX effect_provisions_effect_idx ON public.effect_provisions USING btree (effect_id, side);
+
+
+--
+-- Name: effect_provisions_lookup_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX effect_provisions_lookup_idx ON public.effect_provisions USING btree (side, section_number);
+
+
+--
+-- Name: effects_affected_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX effects_affected_idx ON public.effects USING btree (affected_document_id, in_force_date);
+
+
+--
+-- Name: effects_affecting_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX effects_affecting_idx ON public.effects USING btree (affecting_document_id, in_force_date);
+
+
+--
+-- Name: effects_modified_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX effects_modified_idx ON public.effects USING btree (modified);
+
+
+--
 -- Name: fetch_observations_document_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -538,6 +681,13 @@ CREATE INDEX fetch_observations_version_idx ON public.fetch_observations USING b
 --
 
 CREATE INDEX provisions_document_idx ON public.provisions USING btree (document_id);
+
+
+--
+-- Name: provisions_document_number_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX provisions_document_number_idx ON public.provisions USING btree (document_id, number);
 
 
 --
@@ -601,6 +751,14 @@ ALTER TABLE ONLY public.document_versions
 
 ALTER TABLE ONLY public.documents
     ADD CONSTRAINT documents_latest_version_id_fkey FOREIGN KEY (latest_version_id) REFERENCES public.document_versions(id) ON DELETE SET NULL;
+
+
+--
+-- Name: effect_provisions effect_provisions_effect_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.effect_provisions
+    ADD CONSTRAINT effect_provisions_effect_id_fkey FOREIGN KEY (effect_id) REFERENCES public.effects(id) ON DELETE CASCADE;
 
 
 --

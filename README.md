@@ -171,6 +171,9 @@ uv run git-legislation cache-pdf aosp/1469/12 --at 2026-05-05
 
 The core distinction is:
 
+- `effects`: amendment records — which instrument changed which provision of which document, its
+  type, in-force date, and whether the revised text already reflects it. `effect_provisions` holds
+  the per-provision references on each side (affected, affecting, commencing).
 - `documents`: stable abstract legislation identities, such as `ukpga/2026/14`.
 - `document_versions`: concrete textual states, such as enacted or point-in-time versions.
 - `provisions`: extracted browse/search units from generated Markdown.
@@ -196,7 +199,11 @@ Key assumptions:
 - CLML XML is the canonical source where available.
 - PDF-only or metadata-only records are valid coverage gaps, not pipeline failures.
 - Official revised CLML should be the source of truth for v1 text updates.
-- Effects feeds should be stored as audit metadata later, not used alone to rewrite text.
+- Effects feeds are first-class metadata (the `effects` table), but must not be used alone to rewrite
+  text: they say a provision changed, not what the new words are. Their editorial record includes
+  machine-extracted and editor-rejected entries, and some effects carry an empty type (stored as
+  `textual_kind = 'UN'`) or reference legislation not published on the site (null
+  `affected_document_id`).
 
 ## Roadmap
 
@@ -239,14 +246,25 @@ Goal: prove the diff experience beats legislation.gov.uk's before paying for a f
 backfill. Point-in-time versions exist upstream mainly for revised legislation (deep for primary
 legislation, thin for most secondary), so historic coverage is patchy by construction — pilot first.
 
-- Backfill all available point-in-time versions for ~30 heavily amended acts (Immigration Act 1971,
-  Companies Act 2006, that class).
-- Provision-level diff rendering in the web app: align section against section, not page against
-  page, building on the `provisions` table.
+- ~~Backfill all available point-in-time versions for ~30 heavily amended acts~~ Done:
+  `backfill-document-versions --from-file scripts/pilot-acts.txt` reads each document's
+  `dct:hasVersion` links and ingests every dated expression with `snapshot_date` set to its
+  validity-start date. The pilot set holds ~3,800 versions (Town and Country Planning Act 1990: 304).
+- ~~Provision-level diff rendering in the web app~~ Done: read API `GET /diff?from=&to=` aligns
+  provisions by type + number and classifies each as added/removed/changed/unchanged; the web app
+  renders word-level `del`/`ins` marks, with a compare form and per-version "changes from previous"
+  links on every document page. Comparison is whitespace-insensitive, because upstream serves the
+  same CLML both compact and pretty-printed.
+- ~~Attach effects records as annotations~~ Ingestion done: `ingest-effects` reads the Changes to
+  Legislation feeds (`/changes/{affected,affecting}/{path}/data.feed`) into `effects` +
+  `effect_provisions`, keyed on the upstream `EffectId` and idempotent on re-run. Each record carries
+  the effect type, the affecting instrument and provision, in-force date, commencement authority, and
+  the `Applied` flag saying whether the revised text already reflects it. `effects-coverage` reports
+  how many effects resolve to a local provision. Still to do: surface them on diff cards and build
+  the changeset view.
 - Changesets, not timelines: render one amending instrument as a single changeset touching many
-  documents — the genuinely novel view nobody else offers.
-- Attach effects records to changesets as annotations ("commit messages": which instrument made the
-  change, commencement dates).
+  documents — the genuinely novel view nobody else offers. `ingest-effects --direction affecting`
+  already collects the data for this.
 - Markdown quality work, since a noisy converter means noisy diffs:
   - Add a Markdown quality audit command; compare XML structure against Markdown output for
     full-text CLML records; flag missing schedules, weak headings, table-heavy documents, and

@@ -365,6 +365,30 @@ def _document_ref_from_href(href: str, title: str) -> DocumentRef:
 
 HAS_VERSION_REL = "http://purl.org/dc/terms/hasVersion"
 ISO_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+METADATA_NAMESPACE = "http://www.legislation.gov.uk/namespaces/metadata"
+# Structural refs look like "section-28D-4", "schedule-5-paragraph-1",
+# "regulation-2-f": the leading word is the provision kind and the token after
+# it is the top-level number that joins to provisions.number.
+PROVISION_REF_RE = re.compile(r"\A([a-z]+)-([0-9]+[A-Z]*)")
+# Some upstream provision elements carry no Ref, or a Roman-numeral one
+# ("part-I"), so the human label is the fallback source of the number.
+PROVISION_LABEL_KINDS = {
+    "s.": "section",
+    "ss.": "section",
+    "sch.": "schedule",
+    "schs.": "schedule",
+    "para.": "paragraph",
+    "paras.": "paragraph",
+    "pt.": "part",
+    "pts.": "part",
+    "ch.": "chapter",
+    "rule": "rule",
+    "reg.": "regulation",
+    "regs.": "regulation",
+    "art.": "article",
+    "arts.": "article",
+}
+PROVISION_LABEL_RE = re.compile(r"\A([A-Za-z]+\.?)\s*([0-9]+[A-Z]*)")
 
 
 def parse_document_version_dates(xml_content: bytes | str) -> list[str]:
@@ -381,6 +405,203 @@ def parse_document_version_dates(xml_content: bytes | str) -> list[str]:
         if link.attrib.get("rel") == HAS_VERSION_REL and ISO_DATE_RE.match(title := link.attrib.get("title", ""))
     }
     return sorted(dates)
+
+
+@dataclass(frozen=True)
+class EffectProvisionRef:
+    side: str
+    provision_kind: str | None
+    section_number: str | None
+    ref: str | None
+    uri: str | None
+    label: str
+
+
+@dataclass(frozen=True)
+class Effect:
+    id: str
+    uri: str | None
+    effect_type: str
+    applied: bool
+    requires_applied: bool
+    prospective: bool
+    in_force_date: str | None
+    in_force_qualification: str | None
+    commencing_document_id: str | None
+    commencement_authority: str | None
+    affected_document_id: str | None
+    affected_title: str | None
+    affected_provisions: str | None
+    affecting_document_id: str | None
+    affecting_title: str | None
+    affecting_provisions: str | None
+    comments: str | None
+    modified: str | None
+    provisions: tuple[EffectProvisionRef, ...]
+
+
+def effects_feed_url(source_path: tuple[str, ...], direction: str = "affected", page: int = 1) -> str:
+    if direction not in {"affected", "affecting"}:
+        raise ValueError("direction must be 'affected' or 'affecting'")
+    path = "/".join(source_path)
+    return f"{BASE_URL}/changes/{direction}/{path}/data.feed?page={page}"
+
+
+def document_id_from_legislation_uri(uri: str | None) -> str | None:
+    """ "http://www.legislation.gov.uk/id/ukpga/1971/77" -> "ukpga/1971/77"."""
+    if not uri:
+        return None
+    parts = [part for part in urlparse(uri).path.strip("/").split("/") if part]
+    if parts and parts[0] == "id":
+        parts = parts[1:]
+    return "/".join(parts) if parts else None
+
+
+def parse_effects_feed(feed: bytes) -> tuple[list[Effect], int]:
+    """Parse one page of a Changes to Legislation feed into effects + remaining pages."""
+    root = ElementTree.fromstring(feed)
+    more_pages_text = root.findtext(f"{{{LEGISLATION_NAMESPACE}}}morePages")
+    more_pages = int(more_pages_text) if more_pages_text and more_pages_text.isdigit() else 0
+
+    effects: list[Effect] = []
+    for element in root.iter(f"{{{METADATA_NAMESPACE}}}Effect"):
+        effect_id = element.attrib.get("EffectId")
+        if effect_id is None:
+            continue
+        effects.append(_effect_from_element(element, effect_id))
+    return effects, more_pages
+
+
+def _effect_from_element(element: ElementTree.Element, effect_id: str) -> Effect:
+    in_force_date, qualification, commencing_uri, prospective = _in_force_details(element)
+    provisions: list[EffectProvisionRef] = []
+    for side, container_tag in (
+        ("affected", "AffectedProvisions"),
+        ("affecting", "AffectingProvisions"),
+        ("commencing", "CommencementAuthority"),
+    ):
+        container = element.find(f"{{{METADATA_NAMESPACE}}}{container_tag}")
+        if container is not None:
+            provisions.extend(_provision_refs(container, side=side))
+
+    return Effect(
+        id=effect_id,
+        uri=element.attrib.get("URI"),
+        effect_type=element.attrib.get("Type", ""),
+        applied=element.attrib.get("Applied") == "true",
+        requires_applied=element.attrib.get("RequiresApplied") == "true",
+        prospective=prospective,
+        in_force_date=in_force_date,
+        in_force_qualification=qualification,
+        commencing_document_id=document_id_from_legislation_uri(commencing_uri),
+        commencement_authority=_provision_labels(element, "CommencementAuthority"),
+        affected_document_id=document_id_from_legislation_uri(element.attrib.get("AffectedURI")),
+        affected_title=element.findtext(f"{{{METADATA_NAMESPACE}}}AffectedTitle") or None,
+        affected_provisions=element.attrib.get("AffectedProvisions") or None,
+        affecting_document_id=document_id_from_legislation_uri(element.attrib.get("AffectingURI")),
+        affecting_title=element.findtext(f"{{{METADATA_NAMESPACE}}}AffectingTitle") or None,
+        affecting_provisions=element.attrib.get("AffectingProvisions") or None,
+        comments=element.attrib.get("Comments") or None,
+        modified=element.attrib.get("Modified"),
+        provisions=tuple(provisions),
+    )
+
+
+def _in_force_details(element: ElementTree.Element) -> tuple[str | None, str | None, str | None, bool]:
+    """Reduce the InForce entries to one effective date plus a prospective flag.
+
+    An effect can carry several InForce elements (partial commencement, or a
+    prospective placeholder alongside a real date). The earliest dated entry is
+    the one that makes the change live; an effect is prospective only when no
+    entry carries a date at all.
+    """
+    dated: list[tuple[str, str | None, str | None]] = []
+    prospective = False
+    for in_force in element.iter(f"{{{METADATA_NAMESPACE}}}InForce"):
+        date_value = in_force.attrib.get("Date")
+        if date_value and ISO_DATE_RE.match(date_value):
+            dated.append(
+                (
+                    date_value,
+                    in_force.attrib.get("Qualification") or None,
+                    in_force.attrib.get("CommencingURI"),
+                )
+            )
+        elif in_force.attrib.get("Prospective") == "true":
+            prospective = True
+    if not dated:
+        return None, None, None, prospective
+    # Compare on the date alone: entries sharing a date would otherwise fall
+    # through to comparing optional qualification/URI fields, where None and
+    # str are not orderable.
+    date_value, qualification, commencing_uri = min(dated, key=lambda entry: entry[0])
+    return date_value, qualification, commencing_uri, False
+
+
+def provision_kind_and_number(ref: str | None, label: str) -> tuple[str | None, str | None]:
+    """Resolve a provision's kind and top-level number from its ref, else its label."""
+    match = PROVISION_REF_RE.match(ref or "")
+    if match is not None:
+        return match.group(1), match.group(2)
+    label_match = PROVISION_LABEL_RE.match(label.strip())
+    if label_match is None:
+        return None, None
+    kind = PROVISION_LABEL_KINDS.get(label_match.group(1).lower())
+    if kind is None:
+        return None, None
+    return kind, label_match.group(2)
+
+
+def _provision_refs(container: ElementTree.Element, side: str) -> list[EffectProvisionRef]:
+    refs: list[EffectProvisionRef] = []
+    for child in container:
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag not in {"Section", "SectionRange"}:
+            continue
+        ref = child.attrib.get("Ref")
+        label = " ".join("".join(child.itertext()).split())
+        kind, number = provision_kind_and_number(ref, label)
+        refs.append(
+            EffectProvisionRef(
+                side=side,
+                provision_kind=kind,
+                section_number=number,
+                ref=ref,
+                uri=child.attrib.get("URI"),
+                label=label,
+            )
+        )
+    return refs
+
+
+def _provision_labels(element: ElementTree.Element, container_tag: str) -> str | None:
+    container = element.find(f"{{{METADATA_NAMESPACE}}}{container_tag}")
+    if container is None:
+        return None
+    text = " ".join("".join(container.itertext()).split())
+    return text or None
+
+
+def fetch_document_effects(
+    client: FetchClient,
+    source_path: tuple[str, ...],
+    direction: str = "affected",
+    log: Callable[[str], None] | None = None,
+) -> list[Effect]:
+    """Fetch every effect recorded against (or made by) one document."""
+    effects: list[Effect] = []
+    page = 1
+    while True:
+        response = client.get(effects_feed_url(source_path, direction=direction, page=page))
+        response.raise_for_status()
+        page_effects, more_pages = parse_effects_feed(response.content)
+        effects.extend(page_effects)
+        if more_pages <= 0:
+            break
+        page += 1
+        if log is not None and page % 10 == 0:
+            log(f"effects {'/'.join(source_path)}: {page} pages ({len(effects)} effects so far)")
+    return effects
 
 
 def publication_log_feed_url(updated_date: str, page: int = 1) -> str:
