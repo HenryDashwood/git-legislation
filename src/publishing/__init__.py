@@ -17,6 +17,10 @@ PUBLISH_LOG_INTERVAL = 1000
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 SCHEDULE_HEADING_RE = re.compile(r"^SCHEDULES?\.?\s+([A-Za-z]?\d+[A-Za-z]?)\b", re.IGNORECASE)
+# A trailing "(S)" / "(E+W)" / "(N.I.)" marks an alternative-extent reading of a
+# provision. Restricted to extent letters so ordinary parenthesised headings
+# are not mistaken for one.
+EXTENT_SUFFIX_RE = re.compile(r"\s+\(([EWSNI.+ ]+)\)$")
 # Point-in-time CLML embeds the request date in legislation.gov.uk URIs
 # (DocumentURI, PDF alternatives), so identical content fetched under two
 # --at dates hashes differently unless those date segments are stripped.
@@ -96,6 +100,7 @@ class ProvisionRecord:
     anchor: str
     markdown: str
     text: str
+    extent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +427,7 @@ def split_provisions(body_markdown: str) -> list[ProvisionRecord]:
         end = matches[index].start() if index < len(matches) else len(body_markdown)
         markdown = body_markdown[start:end].strip()
         heading = match.group(1).strip()
+        extent_match = EXTENT_SUFFIX_RE.search(heading)
         provisions.append(
             ProvisionRecord(
                 ordinal=index,
@@ -430,6 +436,7 @@ def split_provisions(body_markdown: str) -> list[ProvisionRecord]:
                 anchor=slugify(heading) or f"provision-{index}",
                 markdown=markdown,
                 text=markdown_to_text(markdown),
+                extent=extent_match.group(1).strip() if extent_match else None,
             )
         )
 
@@ -603,8 +610,8 @@ def upsert_postgres_stored_document(
             """
             insert into provisions (
                 id, version_id, document_id, ordinal, provision_type, number,
-                heading, anchor, markdown, plain_text
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                heading, anchor, markdown, plain_text, extent
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict(id) do update set
                 provision_type = excluded.provision_type,
                 number = excluded.number,
@@ -624,6 +631,7 @@ def upsert_postgres_stored_document(
                 provision.anchor,
                 provision.markdown,
                 provision.text,
+                provision.extent,
             ),
         )
 
@@ -983,8 +991,8 @@ def rerender_document_versions(
                 """
                 insert into provisions (
                     id, version_id, document_id, ordinal, provision_type, number,
-                    heading, anchor, markdown, plain_text
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    heading, anchor, markdown, plain_text, extent
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     f"{version_id}:provision:{provision.ordinal}",
@@ -997,6 +1005,7 @@ def rerender_document_versions(
                     provision.anchor,
                     provision.markdown,
                     provision.text,
+                    provision.extent,
                 ),
             )
         report.rerendered += 1

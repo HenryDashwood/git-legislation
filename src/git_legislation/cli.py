@@ -654,6 +654,18 @@ def rerender_document_versions_command(
         Path | None,
         typer.Option("--from-file", help="File of source paths, one per line ('#' comments allowed)."),
     ] = None,
+    all_documents: Annotated[
+        bool,
+        typer.Option("--all", help="Re-render the whole corpus, in document id order."),
+    ] = False,
+    start_after: Annotated[
+        str | None,
+        typer.Option("--start-after", help="Resume --all after this document id."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="Process at most this many documents."),
+    ] = None,
     database_url: Annotated[
         str | None,
         typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
@@ -675,9 +687,28 @@ def rerender_document_versions_command(
     Use after converter changes so all versions of a document are rendered by
     the same converter and diffs compare like with like. Follow with
     normalize-version-hashes to merge versions whose text became identical.
+
+    `--all` walks the whole corpus in document id order; it logs the last id it
+    finished so an interrupted run can resume with `--start-after`.
     """
-    paths = _source_paths_or_raise(source_paths, from_file)
     database_url = _database_url_or_raise(database_url)
+    if all_documents:
+        if source_paths or from_file is not None:
+            raise click.ClickException("--all cannot be combined with source paths or --from-file.")
+        with psycopg.connect(database_url) as connection:
+            rows = connection.execute(
+                f"""
+                select id from documents
+                where (%s::text is null or id > %s)
+                order by id
+                {"limit %s" if limit is not None else ""}
+                """,  # noqa: S608 - limit clause is a fixed fragment; values are bound
+                (start_after, start_after, limit) if limit is not None else (start_after, start_after),
+            ).fetchall()
+        paths = [row[0] for row in rows]
+        typer.echo(f"Re-rendering {len(paths)} documents")
+    else:
+        paths = _source_paths_or_raise(source_paths, from_file)
     object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
     report = RerenderReport()
     with psycopg.connect(database_url) as connection:
@@ -692,7 +723,11 @@ def rerender_document_versions_command(
                 log=typer.echo,
             )
             connection.commit()
-            typer.echo(f"{source_path}: {report.rerendered} re-rendered so far ({report.scanned} scanned)")
+            # The id is logged on every document so an interrupted --all run can
+            # resume from the last line of its log with --start-after.
+            typer.echo(
+                f"done {source_path}: {report.rerendered} re-rendered so far ({report.scanned} scanned)"
+            )
     typer.echo(render_rerender_report(report))
 
 

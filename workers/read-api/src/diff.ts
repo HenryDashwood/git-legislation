@@ -8,6 +8,8 @@ export interface DiffEntry {
   status: DiffStatus;
   provision_type: string | null;
   number: string | null;
+  /** Jurisdiction for an alternative-extent reading; null for the primary text. */
+  extent?: string | null;
   heading: string | null;
   anchor: string | null;
   from_heading?: string | null;
@@ -185,6 +187,7 @@ function describeProvision(provision: Row): Omit<DiffEntry, "status"> {
   return {
     provision_type: asOptionalString(provision["provision_type"]),
     number: asOptionalString(provision["number"]),
+    extent: asOptionalString(provision["extent"]),
     heading: asOptionalString(provision["heading"]),
     anchor: asOptionalString(provision["anchor"]),
   };
@@ -193,9 +196,12 @@ function describeProvision(provision: Row): Omit<DiffEntry, "status"> {
 function provisionKeys(provisions: Row[]): string[] {
   const seen = new Map<string, number>();
   return provisions.map((provision) => {
+    // Extent is part of a provision's identity: an Act can carry an E+W and a
+    // Scottish reading of the same section, and they must diff against their
+    // own counterpart rather than each other.
     const base = `${provision["provision_type"] ?? ""}|${
       provision["number"] ?? provision["heading"] ?? provision["anchor"] ?? ""
-    }`;
+    }|${provision["extent"] ?? ""}`;
     const occurrence = seen.get(base) ?? 0;
     seen.set(base, occurrence + 1);
     return `${base}#${occurrence}`;

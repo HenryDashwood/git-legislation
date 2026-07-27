@@ -499,3 +499,110 @@ def test_render_document_markdown_emits_schedule_headings() -> None:
     assert "## SCHEDULE 1 Disability: supplementary provision" in markdown
     assert "## SCHEDULE 2 Services and public functions" in markdown
     assert "### 2 Certain medical conditions" in markdown
+
+
+MATCH_FALSE_XML = """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Primary>
+    <Body>
+      <P1group RestrictStartDate="1990-01-01">
+        <Title>In force section</Title>
+        <P1><Pnumber>1</Pnumber><P1para><Text>Live text.</Text></P1para></P1>
+      </P1group>
+      <P1group RestrictStartDate="2003-12-30" Match="false">
+        <Title>Not yet commenced</Title>
+        <P1><Pnumber>45A</Pnumber><P1para><Text>Prospective text.</Text></P1para></P1>
+      </P1group>
+      <P1group RestrictEndDate="2001-01-01" Match="false">
+        <Title>Already repealed</Title>
+        <P1><Pnumber>9</Pnumber><P1para><Text>Repealed text.</Text></P1para></P1>
+      </P1group>
+    </Body>
+    <Schedules>
+      <Schedule Match="false">
+        <Number>SCHEDULE 4</Number>
+        <TitleBlock><Title>Future schedule</Title></TitleBlock>
+        <ScheduleBody><P><Text>Not in force yet.</Text></P></ScheduleBody>
+      </Schedule>
+      <Schedule>
+        <Number>SCHEDULE 1</Number>
+        <TitleBlock><Title>Live schedule</Title></TitleBlock>
+        <ScheduleBody><P><Text>In force.</Text></P></ScheduleBody>
+      </Schedule>
+    </Schedules>
+  </Primary>
+</Legislation>
+"""
+
+
+def test_document_sections_omits_provisions_not_in_force_at_the_requested_date(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(MATCH_FALSE_XML)
+
+    sections = document_sections(xml_path)
+
+    assert [(section.number, section.title) for section in sections] == [
+        ("1", "In force section"),
+        ("SCHEDULE 1", "Live schedule"),
+    ]
+
+
+def test_document_sections_omits_repealed_and_prospective_text_from_the_body(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(MATCH_FALSE_XML)
+
+    rendered = "\n".join(line for section in document_sections(xml_path) for line in section.lines)
+
+    assert "Prospective text." not in rendered
+    assert "Repealed text." not in rendered
+    assert "Live text." in rendered
+
+
+EXTENT_VERSIONS_XML = """\
+<Legislation xmlns="http://www.legislation.gov.uk/namespaces/legislation">
+  <Primary>
+    <Body>
+      <P1group AltVersionRefs="v00087" RestrictExtent="E+W">
+        <Title>Prohibition on unauthorised deposit</Title>
+        <P1><Pnumber>33</Pnumber><P1para><Text>England and Wales reading.</Text></P1para></P1>
+      </P1group>
+    </Body>
+  </Primary>
+  <Versions>
+    <Version id="v00087" Description="S" RestrictOutput="false">
+      <P1group RestrictExtent="S">
+        <Title>Prohibition on unauthorised deposit</Title>
+        <P1><Pnumber>33</Pnumber><P1para><Text>Scottish reading.</Text></P1para></P1>
+      </P1group>
+    </Version>
+    <Version id="v00099" Description="N.I." Match="false">
+      <P1group RestrictExtent="N.I.">
+        <Title>Not in force here</Title>
+        <P1><Pnumber>33</Pnumber><P1para><Text>Northern Irish reading.</Text></P1para></P1>
+      </P1group>
+    </Version>
+  </Versions>
+</Legislation>
+"""
+
+
+def test_document_sections_includes_alternative_extent_versions(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(EXTENT_VERSIONS_XML)
+
+    sections = document_sections(xml_path)
+
+    assert [(section.number, section.extent) for section in sections] == [("33", None), ("33", "S")]
+    assert sections[0].lines == ["England and Wales reading."]
+    assert sections[1].lines == ["Scottish reading."]
+
+
+def test_alternative_version_headings_carry_the_extent(tmp_path: Path) -> None:
+    xml_path = tmp_path / "data.xml"
+    xml_path.write_text(EXTENT_VERSIONS_XML)
+    sections = document_sections(xml_path)
+
+    from converters.clmltomarkdown import _section_heading
+
+    assert _section_heading(sections[0]) == "## 33 Prohibition on unauthorised deposit"
+    assert _section_heading(sections[1]) == "## 33 Prohibition on unauthorised deposit (S)"

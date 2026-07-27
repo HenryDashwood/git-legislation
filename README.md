@@ -276,7 +276,18 @@ legislation, thin for most secondary), so historic coverage is patchy by constru
     both, emitting one provision per schedule (the unit effects reference) with its parts and
     paragraphs as `###` sub-headings. Still to do: tables, forms, images, and sub-paragraph precision
     within a schedule.
-  - Improve handling of tables, forms, images, commentary, repeals, and prospective text.
+  - ~~Point-in-time fidelity~~ Done: CLML returns surrounding provisions that are not yet in force
+    or already repealed, flagged `Match="false"`; the converter previously rendered them as live
+    text, so snapshots contained law that was not in force on their date (present in 78% of sampled
+    point-in-time XML). They are now excluded, which also lets a provision show up as *added* in the
+    diff for the date it actually commenced.
+  - ~~Extent-divergent provisions~~ Done: where an Act reads differently by jurisdiction, CLML keeps
+    the primary text in `Body` and the alternatives in a `Versions` container tagged with an extent.
+    Only the primary (usually E+W) reading was being stored, so Scottish, Welsh and NI amendments had
+    no text to land on. Alternatives are now rendered as their own provisions, carrying
+    `provisions.extent`, and the diff aligns each reading against its own counterpart.
+  - Improve handling of tables, forms, images, commentary, and sub-provision precision within
+    schedules and sections.
   - After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from
     stored XML.
 
@@ -318,7 +329,11 @@ not audit metadata.
 ## Open Questions
 
 - Should v1 privilege latest revised law, as-enacted law, or both?
-- How should extent-specific versions be represented when jurisdictions diverge?
+- ~~How should extent-specific versions be represented when jurisdictions diverge?~~ Answered: as
+  separate provisions carrying `provisions.extent`, parsed from an extent marker the converter
+  appends to the heading of an alternative reading ("## 33 Prohibition ... (S)"). Diff alignment
+  keys on extent so readings never cross-match; effects still attach by number and kind, landing on
+  whichever reading actually changed.
 - Should annotations and editorial notes be inline, sidecar metadata, or both?
 - Which EU-origin, devolved, and historical types should count as the v1 corpus?
 - How much normalized/generated text should live in Git versus Postgres/object storage?

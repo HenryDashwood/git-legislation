@@ -387,3 +387,37 @@ def test_split_provisions_types_and_numbers_schedule_headings(tmp_path: Path) ->
 
     assert schedule.heading == "SCHEDULE 5 Transitional provision"
     assert schedule.number == "5"
+
+
+def test_split_provisions_reads_extent_marker_from_heading(tmp_path: Path) -> None:
+    markdown = MARKDOWN + "\n## 33 Prohibition on unauthorised deposit (S)\n\nScottish reading.\n"
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "1990" / "43.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(markdown)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    provisions = parse_markdown_document(ref).provisions
+
+    assert provisions[-1].number == "33"
+    assert provisions[-1].extent == "S"
+    assert provisions[0].extent is None
+
+
+def test_split_provisions_does_not_mistake_ordinary_brackets_for_an_extent(tmp_path: Path) -> None:
+    markdown = MARKDOWN + "\n## 5 Interpretation (general)\n\nText.\n"
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(markdown)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+
+    assert parse_markdown_document(ref).provisions[-1].extent is None

@@ -171,7 +171,7 @@ export class PostgresRepository implements Repository {
   async listProvisionTexts(versionId: string): Promise<Row[]> {
     return await this.sql.unsafe(
       `
-      select ordinal, provision_type, number, heading, anchor, markdown
+      select ordinal, provision_type, number, extent, heading, anchor, markdown
       from provisions
       where version_id = $1
       order by ordinal

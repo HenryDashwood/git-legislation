@@ -1,7 +1,7 @@
 import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -40,6 +40,9 @@ class DocumentSection:
     title: str
     lines: list[str]
     commentary_refs: list[str] = field(default_factory=list)
+    # Set only for alternative-extent versions of a provision, which CLML keeps
+    # in a separate Versions container rather than in the body.
+    extent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,30 @@ def document_sections_from_root(root: ElementTree.Element) -> list[DocumentSecti
     # their own walk — they carry a large share of amending activity and were
     # previously dropped from the rendered text entirely.
     sections.extend(_schedule_sections(root))
+    sections.extend(_alternative_version_sections(root))
+    return sections
+
+
+def _alternative_version_sections(root: ElementTree.Element) -> list[DocumentSection]:
+    """Provisions that read differently in another jurisdiction.
+
+    Where an Act's text diverges by extent, CLML keeps the primary text in Body
+    and the alternatives in a Versions container, each Version tagged with the
+    extent it applies to. Without this walk the corpus holds only the primary
+    (usually E+W) reading, so a Scottish or Northern Irish amendment has no text
+    to land on.
+    """
+    versions = root.find(".//leg:Versions", namespaces=NAMESPACES)
+    if versions is None:
+        return []
+
+    sections: list[DocumentSection] = []
+    for version in versions.findall("leg:Version", namespaces=NAMESPACES):
+        if not in_force_at_requested_date(version):
+            continue
+        extent = version.attrib.get("Description") or None
+        for section in _body_sections(version):
+            sections.append(replace(section, extent=extent))
     return sections
 
 
@@ -152,6 +179,8 @@ def _schedule_sections(root: ElementTree.Element) -> list[DocumentSection]:
     """
     sections: list[DocumentSection] = []
     for schedule in root.findall(".//leg:Schedules/leg:Schedule", namespaces=NAMESPACES):
+        if not in_force_at_requested_date(schedule):
+            continue
         number_element = schedule.find("leg:Number", namespaces=NAMESPACES)
         title_element = schedule.find("leg:TitleBlock/leg:Title", namespaces=NAMESPACES)
         body = schedule.find("leg:ScheduleBody", namespaces=NAMESPACES)
@@ -372,10 +401,24 @@ def _log(log: Callable[[str], None] | None, message: str) -> None:
         log(message)
 
 
+def in_force_at_requested_date(element: ElementTree.Element) -> bool:
+    """Whether CLML considers this element part of the law at the requested date.
+
+    Point-in-time responses carry the surrounding provisions that are not yet in
+    force or already repealed, flagged Match="false" (with RestrictStartDate /
+    RestrictEndDate giving the window). Rendering them would put text in a
+    snapshot that was not law on that date, and would stop a provision showing
+    up as added in the diff for the date it actually commenced.
+    """
+    return element.attrib.get("Match") != "false"
+
+
 def _body_sections(element: ElementTree.Element) -> list[DocumentSection]:
     sections: list[DocumentSection] = []
 
     for child in element:
+        if not in_force_at_requested_date(child):
+            continue
         tag = _local_name(child.tag)
         if tag == "P1group":
             sections.append(_p1group_section(child))
@@ -450,8 +493,12 @@ def _section_lines(group: ElementTree.Element) -> list[str]:
 
 
 def _section_heading(section: DocumentSection) -> str:
-    heading = " ".join(part for part in [section.number, section.title] if part)
-    return f"## {heading or 'Section'}"
+    heading = " ".join(part for part in [section.number, section.title] if part) or "Section"
+    # The extent marker is what carries the jurisdiction through to the parsed
+    # provisions, since those are read back from the Markdown, not the XML.
+    if section.extent:
+        heading = f"{heading} ({section.extent})"
+    return f"## {heading}"
 
 
 def _commentary_refs(element: ElementTree.Element | None) -> list[str]:

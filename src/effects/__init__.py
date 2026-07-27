@@ -198,21 +198,35 @@ paired as (
         where v.document_id = eff.doc and v.snapshot_date >= eff.d
         order by v.snapshot_date asc limit 1) after_id
     from eff
+),
+-- One row per effect: a provision can exist in several extent readings, and an
+-- effect is corroborated if ANY of them changed, not once per reading.
+per_effect as (
+    select
+      paired.id,
+      bool_or(before_id is null or after_id is null) as outside_range,
+      bool_or(pb.markdown is not null and pa.markdown is not null
+                and pb.markdown <> pa.markdown) as text_differs,
+      bool_or((pb.markdown is null) <> (pa.markdown is null)
+                and before_id is not null and after_id is not null) as presence_changed,
+      bool_or(pb.markdown is not null and pa.markdown is not null
+                and pb.markdown = pa.markdown) as text_identical,
+      bool_and(pb.markdown is null and pa.markdown is null) as provision_absent
+    from paired
+    left join provisions pb
+      on pb.version_id = paired.before_id and pb.number = paired.num and pb.provision_type = paired.kind
+    left join provisions pa
+      on pa.version_id = paired.after_id and pa.number = paired.num and pa.provision_type = paired.kind
+    group by paired.id
 )
 select
   count(*)::int total,
-  count(*) filter (where before_id is null or after_id is null)::int outside_range,
-  count(*) filter (where before_id is not null and after_id is not null
-                     and (pb.markdown is null or pa.markdown is null))::int provision_absent,
-  count(*) filter (where pb.markdown is not null and pa.markdown is not null
-                     and pb.markdown <> pa.markdown)::int text_differs,
-  count(*) filter (where pb.markdown is not null and pa.markdown is not null
-                     and pb.markdown = pa.markdown)::int text_identical
-from paired
-left join provisions pb
-  on pb.version_id = paired.before_id and pb.number = paired.num and pb.provision_type = paired.kind
-left join provisions pa
-  on pa.version_id = paired.after_id and pa.number = paired.num and pa.provision_type = paired.kind
+  count(*) filter (where outside_range and not (text_differs or presence_changed))::int outside_range,
+  count(*) filter (where provision_absent)::int provision_absent,
+  count(*) filter (where presence_changed and not text_differs)::int presence_changed,
+  count(*) filter (where text_differs)::int text_differs,
+  count(*) filter (where text_identical and not (text_differs or presence_changed))::int text_identical
+from per_effect
 """
 
 
@@ -222,16 +236,22 @@ class EffectConfirmation:
     total: int
     outside_range: int
     provision_absent: int
+    presence_changed: int
     text_differs: int
     text_identical: int
 
     @property
+    def confirmed(self) -> int:
+        """An effect is corroborated by changed text OR by the provision appearing/vanishing."""
+        return self.text_differs + self.presence_changed
+
+    @property
     def checkable(self) -> int:
-        return self.text_differs + self.text_identical
+        return self.confirmed + self.text_identical
 
     @property
     def confirmed_rate(self) -> float | None:
-        return self.text_differs / self.checkable if self.checkable else None
+        return self.confirmed / self.checkable if self.checkable else None
 
 
 def confirm_effects_against_diffs(
@@ -247,33 +267,40 @@ def confirm_effects_against_diffs(
     against the official amendment record.
     """
     row = connection.execute(CONFIRMATION_SQL, (document_id,)).fetchone()
-    total, outside_range, provision_absent, text_differs, text_identical = row or (0, 0, 0, 0, 0)
+    total, outside_range, provision_absent, presence_changed, text_differs, text_identical = row or (0,) * 6
     return EffectConfirmation(
         document_id=document_id,
         total=total,
         outside_range=outside_range,
         provision_absent=provision_absent,
+        presence_changed=presence_changed,
         text_differs=text_differs,
         text_identical=text_identical,
     )
 
 
 def render_effect_confirmations(confirmations: list[EffectConfirmation]) -> str:
-    lines = [f"{'document':18} {'checked':>8} {'confirmed':>10} {'identical':>10} {'absent':>7} {'rate':>6}"]
-    differs = identical = absent = 0
+    lines = [
+        f"{'document':18} {'checked':>8} {'text':>7} {'+/-':>6} {'identical':>10} {'absent':>7} {'rate':>6}"
+    ]
+    differs = presence = identical = absent = 0
     for confirmation in confirmations:
         rate = confirmation.confirmed_rate
         lines.append(
-            f"{confirmation.document_id:18} {confirmation.checkable:>8} {confirmation.text_differs:>10} "
-            f"{confirmation.text_identical:>10} {confirmation.provision_absent:>7} "
-            f"{f'{rate * 100:.0f}%' if rate is not None else 'n/a':>6}"
+            f"{confirmation.document_id:18} {confirmation.checkable:>8} {confirmation.text_differs:>7} "
+            f"{confirmation.presence_changed:>6} {confirmation.text_identical:>10} "
+            f"{confirmation.provision_absent:>7} {f'{rate * 100:.0f}%' if rate is not None else 'n/a':>6}"
         )
         differs += confirmation.text_differs
+        presence += confirmation.presence_changed
         identical += confirmation.text_identical
         absent += confirmation.provision_absent
-    checkable = differs + identical
-    overall = f"{differs / checkable * 100:.0f}%" if checkable else "n/a"
-    lines.append(f"{'TOTAL':18} {checkable:>8} {differs:>10} {identical:>10} {absent:>7} {overall:>6}")
+    confirmed = differs + presence
+    checkable = confirmed + identical
+    overall = f"{confirmed / checkable * 100:.0f}%" if checkable else "n/a"
+    lines.append(
+        f"{'TOTAL':18} {checkable:>8} {differs:>7} {presence:>6} {identical:>10} {absent:>7} {overall:>6}"
+    )
     return "\n".join(lines)
 
 
