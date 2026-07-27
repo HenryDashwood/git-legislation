@@ -907,6 +907,9 @@ class RerenderReport:
     rerendered: int = 0
     unchanged: int = 0
     missing_xml: int = 0
+    # Versions whose re-rendered text became identical to a sibling version;
+    # normalize-version-hashes merges these afterwards.
+    content_conflicts: int = 0
     failures: list[str] = field(default_factory=list)
 
 
@@ -963,61 +966,90 @@ def rerender_document_versions(
             continue
 
         markdown_object = object_store.put_text(document.markdown, key=markdown_key, content_type="text/markdown")
-        upsert_storage_object(connection, markdown_object, source_url=None)
-        connection.execute(
-            """
-            update document_versions
-            set markdown_sha256 = %s, canonical_sha256 = %s, word_count = %s, is_metadata_only = %s
-            where id = %s
-            """,
-            (
-                document.content_hash,
-                document.canonical_content_hash,
-                document.word_count,
-                document.is_metadata_only,
-                version_id,
-            ),
-        )
-        connection.execute(
-            """
-            update document_files set sha256 = %s
-            where version_id = %s and file_kind = 'markdown' and object_key = %s
-            """,
-            (document.content_hash, version_id, markdown_key),
-        )
-        connection.execute("delete from provisions where version_id = %s", (version_id,))
-        for provision in document.provisions:
-            connection.execute(
-                """
-                insert into provisions (
-                    id, version_id, document_id, ordinal, provision_type, number,
-                    heading, anchor, markdown, plain_text, extent
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    f"{version_id}:provision:{provision.ordinal}",
-                    version_id,
-                    document_id,
-                    provision.ordinal,
-                    _provision_type(provision),
-                    provision.number,
-                    provision.heading,
-                    provision.anchor,
-                    provision.markdown,
-                    provision.text,
-                    provision.extent,
-                ),
-            )
+        # A savepoint per version: re-rendering can make two versions of a
+        # document identical (they differed only by text that is not in force,
+        # or were rendered by different converter versions), which collides with
+        # the content-uniqueness index. That is a merge for
+        # normalize-version-hashes to resolve, not a reason to abort the run.
+        try:
+            with connection.transaction():
+                _apply_rerendered_version(
+                    connection,
+                    document=document,
+                    version_id=version_id,
+                    document_id=document_id,
+                    markdown_key=markdown_key,
+                    markdown_object=markdown_object,
+                )
+        except psycopg.errors.UniqueViolation:
+            report.content_conflicts += 1
+            continue
         report.rerendered += 1
         if report.rerendered % 50 == 0:
             connection.commit()
             _log(log, f"Re-rendered {report.rerendered} versions ({report.scanned} scanned)")
 
 
+def _apply_rerendered_version(
+    connection: psycopg.Connection[Any],
+    document: ParsedMarkdownDocument,
+    version_id: str,
+    document_id: str,
+    markdown_key: str,
+    markdown_object: StoredObject,
+) -> None:
+    upsert_storage_object(connection, markdown_object, source_url=None)
+    connection.execute(
+        """
+        update document_versions
+        set markdown_sha256 = %s, canonical_sha256 = %s, word_count = %s, is_metadata_only = %s
+        where id = %s
+        """,
+        (
+            document.content_hash,
+            document.canonical_content_hash,
+            document.word_count,
+            document.is_metadata_only,
+            version_id,
+        ),
+    )
+    connection.execute(
+        """
+        update document_files set sha256 = %s
+        where version_id = %s and file_kind = 'markdown' and object_key = %s
+        """,
+        (document.content_hash, version_id, markdown_key),
+    )
+    connection.execute("delete from provisions where version_id = %s", (version_id,))
+    for provision in document.provisions:
+        connection.execute(
+            """
+            insert into provisions (
+                id, version_id, document_id, ordinal, provision_type, number,
+                heading, anchor, markdown, plain_text, extent
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                f"{version_id}:provision:{provision.ordinal}",
+                version_id,
+                document_id,
+                provision.ordinal,
+                _provision_type(provision),
+                provision.number,
+                provision.heading,
+                provision.anchor,
+                provision.markdown,
+                provision.text,
+                provision.extent,
+            ),
+        )
+
+
 def render_rerender_report(report: RerenderReport) -> str:
     lines = [
         f"Scanned {report.scanned} versions: re-rendered {report.rerendered}, "
-        f"{report.unchanged} unchanged, {report.missing_xml} missing XML, {len(report.failures)} failures"
+        f"{report.unchanged} unchanged, {report.content_conflicts} now duplicate content, "
+        f"{report.missing_xml} missing XML, {len(report.failures)} failures"
     ]
     lines.extend(f"- {failure}" for failure in report.failures[:20])
     return "\n".join(lines)

@@ -11,6 +11,12 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
+      # The container's psql is how we reach PlanetScale (the host's is broken),
+      # and that DSN uses sslmode=verify-full. The base image ships no CA bundle,
+      # and an apt-get install of one is lost whenever the container is
+      # recreated, so mount a copy of the host's. Refresh it with:
+      #   cp /opt/homebrew/etc/ca-certificates/cert.pem var/tls/ca-certificates.crt
+      - ./var/tls/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d british_legislation"]
       interval: 5s

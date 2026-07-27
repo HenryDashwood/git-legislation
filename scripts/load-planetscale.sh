@@ -29,7 +29,13 @@ psql_target() {
   docker exec -i "$CONTAINER" psql "$PSCALE_URL" -v ON_ERROR_STOP=1 "$@"
 }
 
-TABLES=(storage_objects documents document_versions provisions document_files fetch_runs fetch_observations)
+# Order matters: parents before children, so foreign keys resolve as we go.
+# The effects tables reference documents only by plain text (an effect can name
+# legislation that is not published), so they can load last without constraints.
+TABLES=(
+  storage_objects documents document_versions provisions document_files
+  fetch_runs fetch_observations effects effect_provisions effects_cursor
+)
 
 log "checking target is empty"
 for table in "${TABLES[@]}"; do
@@ -53,6 +59,26 @@ for table in "${TABLES[@]}"; do
   count=$(psql_target -t -A -c "select count(*) from $table")
   log "$table loaded: $count rows"
 done
+
+# COPY writes explicit ids without advancing the owning sequence, so any later
+# insert on the target would collide until the sequences are moved past the
+# loaded maximum.
+log "resetting id sequences"
+psql_target -q -c "
+do \$\$
+declare rec record;
+begin
+  for rec in
+    select c.table_name, c.column_name,
+           pg_get_serial_sequence(c.table_name, c.column_name) as seq
+    from information_schema.columns c
+    where c.table_schema = 'public'
+      and pg_get_serial_sequence(c.table_name, c.column_name) is not null
+  loop
+    execute format('select setval(%L, coalesce((select max(%I) from %I), 0) + 1, false)',
+                   rec.seq, rec.column_name, rec.table_name);
+  end loop;
+end \$\$;"
 
 log "backfilling documents.latest_version_id"
 {
