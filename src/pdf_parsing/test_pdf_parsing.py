@@ -1,3 +1,4 @@
+import gzip
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Any
@@ -95,8 +96,10 @@ def test_parse_pdf_sample_caches_pdf_and_records_liteparse_artifacts(tmp_path: P
     assert commands[0][commands[0].index("--format") + 1] == "text"
     assert commands[1][commands[1].index("--format") + 1] == "json"
     assert report.artifacts[0].word_count == 5
-    assert report.artifacts[0].text_object.path.read_text() == "Section 1 Example extracted text"
-    assert report.artifacts[0].report_object.path.read_text() == '{"pages":[]}'
+    assert gzip.decompress(report.artifacts[0].text_object.path.read_bytes()).decode() == (
+        "Section 1 Example extracted text"
+    )
+    assert gzip.decompress(report.artifacts[0].report_object.path.read_bytes()).decode() == '{"pages":[]}'
     assert any(
         params[0] == report.artifacts[0].pdf_object.key
         for sql, params in connection.executed
@@ -191,7 +194,9 @@ def test_cache_document_marker_markdown_records_noncanonical_markdown(tmp_path: 
     assert "--output_dir" in commands[0]
     assert "--disable_image_extraction" in commands[0]
     assert markdown_object.key.startswith("markdown/marker/point-in-time/2026-05-05/ukpga/1963/1/")
-    assert markdown_object.path.read_text() == "# Marker extracted text\n\nBody text from PDF."
+    assert gzip.decompress(markdown_object.path.read_bytes()).decode() == (
+        "# Marker extracted text\n\nBody text from PDF."
+    )
     inserted_file_kinds = [
         params[2] for sql, params in connection.executed if "insert into document_files" in sql and len(params) >= 3
     ]
@@ -274,10 +279,11 @@ def test_normalize_liteparse_markdown_sample_records_noncanonical_markdown(tmp_p
 
     assert report.scanned == 1
     assert report.normalized == 1
-    assert report.markdown_object_keys == [markdown_key]
+    assert report.markdown_object_keys == [f"{markdown_key}.gz"]
     select_sql = next(sql for sql, _ in connection.executed if sql.startswith("select df.document_id"))
     assert "reports/liteparse/%%" in select_sql
-    assert (tmp_path / "objects" / "legislation" / markdown_key).read_text().startswith("# ukpga/1963/1")
+    stored = gzip.decompress((tmp_path / "objects" / "legislation" / f"{markdown_key}.gz").read_bytes())
+    assert stored.decode().startswith("# ukpga/1963/1")
     inserted_file_kinds = [
         params[2] for sql, params in connection.executed if "insert into document_files" in sql and len(params) >= 3
     ]

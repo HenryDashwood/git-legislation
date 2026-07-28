@@ -333,6 +333,18 @@ CREATE TABLE public.pdf_fetch_failures (
 
 
 --
+-- Name: provision_texts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.provision_texts (
+    sha256 text NOT NULL,
+    markdown text NOT NULL,
+    plain_text text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: provisions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -345,9 +357,9 @@ CREATE TABLE public.provisions (
     number text,
     heading text NOT NULL,
     anchor text NOT NULL,
-    markdown text NOT NULL,
-    plain_text text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    extent text,
+    text_sha256 text NOT NULL,
     CONSTRAINT provisions_ordinal_check CHECK ((ordinal > 0))
 );
 
@@ -502,6 +514,14 @@ ALTER TABLE ONLY public.goose_db_version
 
 ALTER TABLE ONLY public.pdf_fetch_failures
     ADD CONSTRAINT pdf_fetch_failures_pkey PRIMARY KEY (document_file_id);
+
+
+--
+-- Name: provision_texts provision_texts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.provision_texts
+    ADD CONSTRAINT provision_texts_pkey PRIMARY KEY (sha256);
 
 
 --
@@ -684,10 +704,24 @@ CREATE INDEX provisions_document_idx ON public.provisions USING btree (document_
 
 
 --
+-- Name: provisions_document_number_extent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX provisions_document_number_extent_idx ON public.provisions USING btree (document_id, number, extent);
+
+
+--
 -- Name: provisions_document_number_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX provisions_document_number_idx ON public.provisions USING btree (document_id, number);
+
+
+--
+-- Name: provisions_text_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX provisions_text_idx ON public.provisions USING btree (text_sha256);
 
 
 --
@@ -791,6 +825,14 @@ ALTER TABLE ONLY public.fetch_observations
 
 ALTER TABLE ONLY public.provisions
     ADD CONSTRAINT provisions_document_id_fkey FOREIGN KEY (document_id) REFERENCES public.documents(id) ON DELETE CASCADE;
+
+
+--
+-- Name: provisions provisions_text_sha256_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.provisions
+    ADD CONSTRAINT provisions_text_sha256_fkey FOREIGN KEY (text_sha256) REFERENCES public.provision_texts(sha256);
 
 
 --

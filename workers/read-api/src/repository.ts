@@ -171,10 +171,12 @@ export class PostgresRepository implements Repository {
   async listProvisionTexts(versionId: string): Promise<Row[]> {
     return await this.sql.unsafe(
       `
-      select ordinal, provision_type, number, extent, heading, anchor, markdown
-      from provisions
-      where version_id = $1
-      order by ordinal
+      select p.ordinal, p.provision_type, p.number, p.extent, p.heading, p.anchor,
+             p.text_sha256, t.markdown
+      from provisions p
+      join provision_texts t on t.sha256 = p.text_sha256
+      where p.version_id = $1
+      order by p.ordinal
       `,
       [versionId],
     );
@@ -242,10 +244,11 @@ export class PostgresRepository implements Repository {
     const rows = await this.sql.unsafe(
       `
       select
-        id, version_id, document_id, ordinal, provision_type, number, heading,
-        anchor, markdown, plain_text
-      from provisions
-      where version_id = $1 and anchor = $2
+        p.id, p.version_id, p.document_id, p.ordinal, p.provision_type, p.number, p.heading,
+        p.anchor, p.extent, t.markdown, t.plain_text
+      from provisions p
+      join provision_texts t on t.sha256 = p.text_sha256
+      where p.version_id = $1 and p.anchor = $2
       `,
       [versionId, anchor],
     );

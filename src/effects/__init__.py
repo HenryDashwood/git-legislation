@@ -205,13 +205,13 @@ per_effect as (
     select
       paired.id,
       bool_or(before_id is null or after_id is null) as outside_range,
-      bool_or(pb.markdown is not null and pa.markdown is not null
-                and pb.markdown <> pa.markdown) as text_differs,
-      bool_or((pb.markdown is null) <> (pa.markdown is null)
+      bool_or(pb.text_sha256 is not null and pa.text_sha256 is not null
+                and pb.text_sha256 <> pa.text_sha256) as text_differs,
+      bool_or((pb.text_sha256 is null) <> (pa.text_sha256 is null)
                 and before_id is not null and after_id is not null) as presence_changed,
-      bool_or(pb.markdown is not null and pa.markdown is not null
-                and pb.markdown = pa.markdown) as text_identical,
-      bool_and(pb.markdown is null and pa.markdown is null) as provision_absent
+      bool_or(pb.text_sha256 is not null and pa.text_sha256 is not null
+                and pb.text_sha256 = pa.text_sha256) as text_identical,
+      bool_and(pb.text_sha256 is null and pa.text_sha256 is null) as provision_absent
     from paired
     left join provisions pb
       on pb.version_id = paired.before_id and pb.number = paired.num and pb.provision_type = paired.kind

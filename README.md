@@ -150,16 +150,34 @@ Populate from local (uses the docker container's PG client tools; no DDL rights 
 zsh scripts/load-planetscale.sh
 ```
 
-Objects: sync the locally-resident trees (markdown, xml) to R2 (idempotent; re-run to pick up deltas):
+Objects: upload the locally-resident trees (markdown, xml) to R2 (idempotent; re-run to pick up
+deltas):
 
 ```bash
 zsh scripts/sync.sh
 ```
 
-Never run a full-tree `rclone sync` of `var/object-store/legislation`: the drained trees (pdf,
-reports, extracted-text) are deleted locally by `scripts/drain.sh` after verified upload, and a
-full-tree sync would mirror those deletions into R2. `sync.sh` limits itself to the resident
-trees; `drain.sh` moves write-once artifacts to R2 and deletes the verified local copies.
+`sync.sh` only ever copies. Deleting from R2 is a separate, deliberate step:
+
+```bash
+zsh scripts/prune-r2.sh            # dry run
+zsh scripts/prune-r2.sh --apply    # actually delete
+```
+
+That split exists because a mirroring sync is the one command that can take production down. On
+2026-07-28 the daily poll ran one just after the object store had been re-keyed to `.gz` locally
+but before the serving database knew about it, so every key production was asking for was deleted
+and content endpoints 404ed for five hours. `prune-r2.sh` samples keys from the serving database
+and refuses to delete if they are missing locally, which is exactly that failure signature.
+
+Never run a full-tree `rclone sync` of `var/object-store/legislation` by hand either: the drained
+trees (pdf, reports, extracted-text) are deleted locally by `scripts/drain.sh` after verified
+upload, so a full-tree mirror would remove them from R2.
+
+Objects are stored gzipped where they compress (XML, Markdown, JSON), keyed with a `.gz` suffix;
+the corpus went from 50.7 GB to 6.0 GB. `storage_objects.sha256` remains the hash of the
+*uncompressed* content, so version identity is unaffected by the encoding, and the read API
+decompresses on the way out so consumers see plain text.
 
 To cache the PDF for a specific document into the object store:
 

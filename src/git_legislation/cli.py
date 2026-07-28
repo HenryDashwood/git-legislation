@@ -43,16 +43,19 @@ from pdf_parsing import (
     render_pdf_parse_sample_report,
 )
 from publishing import (
+    CompressionReport,
     PublishReport,
     RerenderReport,
     VersionHashNormalizationReport,
     backfill_canonical_hashes,
+    compress_object_store,
     create_publish_run,
     finish_publish_run,
     merge_duplicate_version_rows,
     publish_document_text,
     publish_document_text_to_postgres,
     record_publish_observation,
+    render_compression_report,
     render_publish_report,
     render_rerender_report,
     render_version_hash_normalization_report,
@@ -332,11 +335,10 @@ def rerender_markdown_command(
         publish_runs: dict[tuple[str, str | None], int] = {}
         for document_id, source_path, version_kind, snapshot_date, object_key in rows:
             scanned += 1
-            xml_path = object_store.path_for_key(object_key)
-            if not xml_path.exists():
+            if not object_store.exists(object_key):
                 missing_xml += 1
                 continue
-            xml_content = xml_path.read_bytes()
+            xml_content = object_store.read_bytes(object_key)
             try:
                 markdown = render_document_markdown_from_xml(xml_content)
             except Exception as error:
@@ -883,6 +885,53 @@ def _date_range(since: str, until: str) -> list[str]:
     first = date.fromisoformat(since)
     last = date.fromisoformat(until)
     return [(first + timedelta(days=offset)).isoformat() for offset in range((last - first).days + 1)]
+
+
+@app.command("compress-object-store")
+def compress_object_store_command(
+    limit: Annotated[int | None, typer.Option("--limit", min=1, help="Process at most this many objects.")] = None,
+    start_after: Annotated[
+        str | None,
+        typer.Option("--start-after", help="Resume after this object key."),
+    ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+    object_store_root: Annotated[
+        Path,
+        typer.Option(
+            "--object-store-root",
+            help="Local filesystem object store root. Defaults to var/object-store.",
+        ),
+    ] = DEFAULT_OBJECT_STORE_ROOT,
+    object_store_bucket: Annotated[
+        str,
+        typer.Option("--object-store-bucket", help="Object store bucket name."),
+    ] = "legislation",
+) -> None:
+    """Gzip stored XML and Markdown objects in place, re-keying them to `.gz`.
+
+    Each object is verified to decode back to its original bytes before the
+    uncompressed copy is removed, and the recorded sha256 stays the hash of the
+    original content so version identity is unaffected. Safe to re-run: objects
+    already ending in `.gz` are skipped.
+    """
+    database_url = _database_url_or_raise(database_url)
+    object_store = LocalObjectStore(root=object_store_root, bucket=object_store_bucket)
+    report = CompressionReport()
+    with psycopg.connect(database_url) as connection:
+        last_key = compress_object_store(
+            connection,
+            object_store=object_store,
+            report=report,
+            limit=limit,
+            start_after=start_after,
+            log=typer.echo,
+        )
+    typer.echo(render_compression_report(report))
+    if last_key is not None:
+        typer.echo(f"last key processed: {last_key}")
 
 
 @app.command("normalize-version-hashes")

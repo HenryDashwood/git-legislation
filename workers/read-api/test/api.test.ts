@@ -492,3 +492,36 @@ describe("effects on diffs and changesets", () => {
     expect(repository.calls["listEffects"]).toMatchObject({ direction: "affecting" });
   });
 });
+
+describe("compressed object serving", () => {
+  it("decompresses a gzipped object so consumers see plain content", async () => {
+    const plain = "# Heading\n\nBody text.";
+    const gzipped = new Response(
+      new Blob([plain]).stream().pipeThrough(new CompressionStream("gzip")),
+    );
+    const stored = await gzipped.arrayBuffer();
+
+    class GzRepository extends FakeRepository {
+      override async getCanonicalFile(): Promise<Row | null> {
+        return {
+          ...MARKDOWN_FILE,
+          object_key: "markdown/point-in-time/2026-05-05/ukpga/2026/14.md.gz",
+          content_type: "text/markdown",
+        };
+      }
+    }
+
+    const bucket = {
+      get: async () => ({ body: new Blob([stored]).stream(), size: stored.byteLength }),
+    };
+    const app = createApp({ repository: () => new GzRepository() });
+    const response = await app.request(
+      `/versions/${encodeURIComponent(String(VERSION["id"]))}/content?kind=markdown`,
+      {},
+      { ...testEnv, BUCKET: bucket } as unknown as Env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(plain);
+  });
+});

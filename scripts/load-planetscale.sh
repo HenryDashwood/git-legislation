@@ -33,7 +33,7 @@ psql_target() {
 # The effects tables reference documents only by plain text (an effect can name
 # legislation that is not published), so they can load last without constraints.
 TABLES=(
-  storage_objects documents document_versions provisions document_files
+  storage_objects documents document_versions provision_texts provisions document_files
   fetch_runs fetch_observations effects effect_provisions effects_cursor
 )
 

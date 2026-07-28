@@ -38,7 +38,7 @@ done
 log "extracting legal dates"
 uv run git-legislation extract-legal-dates 2>&1 | tail -2
 
-log "syncing content objects to R2"
+log "copying content objects to R2 (additive; prune-r2.sh handles deletions)"
 zsh scripts/sync.sh 2>&1 | tail -1
 
 log "delta-syncing rows to PlanetScale"

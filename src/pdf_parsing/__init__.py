@@ -519,8 +519,7 @@ def normalize_liteparse_markdown_candidate(
     *,
     object_store: LocalObjectStore,
 ) -> StoredObject:
-    report_path = object_store.path_for_key(candidate.report_object_key)
-    liteparse_json = json.loads(report_path.read_text())
+    liteparse_json = json.loads(object_store.read_text(candidate.report_object_key))
     markdown = liteparse_json_to_markdown(liteparse_json, title=_fallback_markdown_title(candidate))
     markdown_object = object_store.put_text(
         markdown,

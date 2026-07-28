@@ -77,13 +77,21 @@ sync_table documents_latest_pointer \
   "update documents d set latest_version_id = t.latest_version_id
    from _stage t where d.id = t.id and t.latest_version_id is distinct from d.latest_version_id;"
 
+# Provision text is content-addressed, so the shared texts must land before the
+# rows that reference them. Only texts newly referenced in this window are sent.
+sync_table provision_texts \
+  "select t.* from provision_texts t where exists (
+     select 1 from provisions p where p.text_sha256 = t.sha256 and p.created_at >= '$SINCE')" \
+  "create temp table _stage (like provision_texts including defaults);" \
+  "insert into provision_texts select * from _stage on conflict (sha256) do nothing;"
+
 sync_table provisions \
   "select * from provisions where created_at >= '$SINCE'" \
   "create temp table _stage (like provisions including defaults);" \
   "insert into provisions select * from _stage
    on conflict (id) do update set
      provision_type = excluded.provision_type, number = excluded.number, heading = excluded.heading,
-     anchor = excluded.anchor, markdown = excluded.markdown, plain_text = excluded.plain_text;"
+     anchor = excluded.anchor, text_sha256 = excluded.text_sha256, extent = excluded.extent;"
 
 sync_table document_files \
   "select * from document_files where created_at >= '$SINCE'" \

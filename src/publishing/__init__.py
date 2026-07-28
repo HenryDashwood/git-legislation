@@ -10,7 +10,13 @@ from typing import Any
 import psycopg
 import yaml
 
-from object_store import DEFAULT_OBJECT_STORE_ROOT, LocalObjectStore, StoredObject
+from object_store import (
+    DEFAULT_OBJECT_STORE_ROOT,
+    LocalObjectStore,
+    StoredObject,
+    guess_content_type,
+    is_compressible,
+)
 
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output"
 PUBLISH_LOG_INTERVAL = 1000
@@ -101,6 +107,11 @@ class ProvisionRecord:
     markdown: str
     text: str
     extent: str | None = None
+
+    @property
+    def text_sha256(self) -> str:
+        """Content address of this provision's text, shared across every version that repeats it."""
+        return hashlib.sha256(self.markdown.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -610,15 +621,15 @@ def upsert_postgres_stored_document(
             """
             insert into provisions (
                 id, version_id, document_id, ordinal, provision_type, number,
-                heading, anchor, markdown, plain_text, extent
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                heading, anchor, text_sha256, extent
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             on conflict(id) do update set
                 provision_type = excluded.provision_type,
                 number = excluded.number,
                 heading = excluded.heading,
                 anchor = excluded.anchor,
-                markdown = excluded.markdown,
-                plain_text = excluded.plain_text
+                text_sha256 = excluded.text_sha256,
+                extent = excluded.extent
             """,
             (
                 provision_id,
@@ -629,8 +640,7 @@ def upsert_postgres_stored_document(
                 provision.number,
                 provision.heading,
                 provision.anchor,
-                provision.markdown,
-                provision.text,
+                upsert_provision_text(connection, provision),
                 provision.extent,
             ),
         )
@@ -730,6 +740,19 @@ def available_version_id(connection: psycopg.Connection[Any], preferred_id: str,
     return f"{preferred_id}:{content_hash[:12]}"
 
 
+def upsert_provision_text(connection: psycopg.Connection[Any], provision: ProvisionRecord) -> str:
+    """Store a provision's text once, keyed by its hash, and return the key."""
+    connection.execute(
+        """
+        insert into provision_texts (sha256, markdown, plain_text)
+        values (%s, %s, %s)
+        on conflict (sha256) do nothing
+        """,
+        (provision.text_sha256, provision.markdown, provision.text),
+    )
+    return provision.text_sha256
+
+
 def upsert_storage_object(
     connection: psycopg.Connection[Any],
     stored_object: StoredObject,
@@ -825,11 +848,10 @@ def backfill_canonical_hashes(
     _log(log, f"Backfilling canonical hashes for {len(rows)} versions")
     for version_id, markdown_object_key in rows:
         report.backfill_scanned += 1
-        markdown_path = object_store.path_for_key(markdown_object_key) if markdown_object_key else None
-        if markdown_path is None or not markdown_path.exists():
+        if not markdown_object_key or not object_store.exists(markdown_object_key):
             report.missing_markdown += 1
             continue
-        canonical_sha256 = canonical_markdown_sha256(markdown_path.read_text())
+        canonical_sha256 = canonical_markdown_sha256(object_store.read_text(markdown_object_key))
         report.backfilled += 1
         if report.dry_run:
             continue
@@ -902,6 +924,122 @@ def merge_duplicate_version_rows(
 
 
 @dataclass
+class CompressionReport:
+    scanned: int = 0
+    compressed: int = 0
+    already_compressed: int = 0
+    missing_file: int = 0
+    bytes_before: int = 0
+    bytes_after: int = 0
+    failures: list[str] = field(default_factory=list)
+
+
+def compress_object_store(
+    connection: psycopg.Connection[Any],
+    object_store: LocalObjectStore,
+    report: CompressionReport,
+    limit: int | None = None,
+    start_after: str | None = None,
+    log: Callable[[str], None] | None = None,
+    commit_interval: int = 500,
+) -> str | None:
+    """Gzip stored text objects in place, re-keying them to `.gz`.
+
+    XML compresses about ten-fold, which is worth far more than the ~2% that
+    deduplication could offer (whole-document objects embed their request date,
+    so identical copies across snapshots are rare). The original is removed only
+    after the compressed copy is written and verified to decode back to the same
+    bytes. Returns the last key processed so an interrupted run can resume.
+    """
+    rows = connection.execute(
+        f"""
+        select key, content_type
+        from storage_objects
+        where key not like '%%.gz'
+          and (%s::text is null or key > %s)
+        order by key
+        {"limit %s" if limit is not None else ""}
+        """,  # noqa: S608 - limit clause is a fixed fragment; values are bound
+        (start_after, start_after, limit) if limit is not None else (start_after, start_after),
+    ).fetchall()
+    _log(log, f"Compressing {len(rows)} candidate objects")
+
+    last_key: str | None = None
+    for key, content_type in rows:
+        last_key = key
+        report.scanned += 1
+        resolved_type = content_type or guess_content_type(Path(key))
+        if not is_compressible(resolved_type):
+            report.already_compressed += 1
+            continue
+
+        source = object_store.path_for_key(key)
+        if not source.exists():
+            # Drained trees (PDFs, reports) live only in R2 by design.
+            report.missing_file += 1
+            continue
+
+        try:
+            original = source.read_bytes()
+            stored = object_store.put_bytes(original, key=key, content_type=resolved_type)
+            if object_store.read_bytes(stored.key) != original:
+                raise ValueError("compressed object did not decode back to the original bytes")
+
+            with connection.transaction():
+                # storage_objects.key is referenced by two tables, so the new row
+                # has to exist before the references move and the old row goes.
+                connection.execute(
+                    """
+                    insert into storage_objects (key, bucket, sha256, byte_size, content_type, source_url)
+                    select %s, bucket, sha256, %s, content_type, source_url
+                    from storage_objects where key = %s
+                    on conflict (key) do nothing
+                    """,
+                    (stored.key, stored.byte_size, key),
+                )
+                connection.execute(
+                    "update document_versions set source_object_key = %s where source_object_key = %s",
+                    (stored.key, key),
+                )
+                connection.execute(
+                    "update document_versions set markdown_object_key = %s where markdown_object_key = %s",
+                    (stored.key, key),
+                )
+                connection.execute(
+                    "update document_files set object_key = %s where object_key = %s",
+                    (stored.key, key),
+                )
+                connection.execute("delete from storage_objects where key = %s", (key,))
+            source.unlink()
+        except Exception as error:  # noqa: BLE001 - one bad object must not stop an overnight run
+            report.failures.append(f"{key}: {error}")
+            continue
+
+        report.compressed += 1
+        report.bytes_before += len(original)
+        report.bytes_after += stored.byte_size
+        if report.compressed % commit_interval == 0:
+            connection.commit()
+            saved = report.bytes_before - report.bytes_after
+            _log(log, f"compressed {report.compressed} objects, saved {saved / 1e9:.2f} GB (last key {key})")
+
+    connection.commit()
+    return last_key
+
+
+def render_compression_report(report: CompressionReport) -> str:
+    ratio = report.bytes_before / report.bytes_after if report.bytes_after else 0
+    lines = [
+        f"Scanned {report.scanned}: compressed {report.compressed}, "
+        f"{report.already_compressed} not compressible, {report.missing_file} not stored locally, "
+        f"{len(report.failures)} failures",
+        f"{report.bytes_before / 1e9:.2f} GB -> {report.bytes_after / 1e9:.2f} GB ({ratio:.1f}x)",
+    ]
+    lines.extend(f"- {failure}" for failure in report.failures[:20])
+    return "\n".join(lines)
+
+
+@dataclass
 class RerenderReport:
     scanned: int = 0
     rerendered: int = 0
@@ -941,12 +1079,11 @@ def rerender_document_versions(
     ).fetchall()
     for version_id, version_kind, snapshot_date, source_key, markdown_key, source_path in rows:
         report.scanned += 1
-        xml_path = object_store.path_for_key(source_key)
-        if not xml_path.exists():
+        if not object_store.exists(source_key):
             report.missing_xml += 1
             continue
         try:
-            markdown = render(xml_path.read_bytes())
+            markdown = render(object_store.read_bytes(source_key))
         except Exception as error:
             report.failures.append(f"{version_id}: {error}")
             continue
@@ -1026,8 +1163,8 @@ def _apply_rerendered_version(
             """
             insert into provisions (
                 id, version_id, document_id, ordinal, provision_type, number,
-                heading, anchor, markdown, plain_text, extent
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                heading, anchor, text_sha256, extent
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 f"{version_id}:provision:{provision.ordinal}",
@@ -1038,8 +1175,7 @@ def _apply_rerendered_version(
                 provision.number,
                 provision.heading,
                 provision.anchor,
-                provision.markdown,
-                provision.text,
+                upsert_provision_text(connection, provision),
                 provision.extent,
             ),
         )

@@ -268,6 +268,20 @@ async function serveObject(
   }
   const sha256 = String(fileRecord?.["object_sha256"] ?? fileRecord?.["sha256"] ?? "");
   const contentType = String(fileRecord?.["content_type"] ?? "application/octet-stream");
+
+  // Text objects are stored gzipped (XML compresses ~10x). Decompress on the
+  // way out so every consumer sees the plain content and the recorded sha256 —
+  // which is of the original bytes — still describes what we serve.
+  if (objectKey.endsWith(".gz")) {
+    const body = object.body.pipeThrough(new DecompressionStream("gzip"));
+    return new Response(body, {
+      headers: {
+        "Content-Type": contentType,
+        ...(sha256 ? { ETag: `"${sha256}"` } : {}),
+      },
+    });
+  }
+
   return new Response(object.body, {
     headers: {
       "Content-Type": contentType,

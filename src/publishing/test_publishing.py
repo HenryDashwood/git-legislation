@@ -1,3 +1,4 @@
+import gzip
 from pathlib import Path
 from typing import Any
 
@@ -171,7 +172,15 @@ def test_publish_markdown_to_postgres_scans_only_selected_type_roots(tmp_path: P
     assert report.scanned == 1
     assert report.published == 1
     stored_markdown_path = (
-        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+        tmp_path
+        / "objects"
+        / "legislation"
+        / "markdown"
+        / "point-in-time"
+        / "2026-05-05"
+        / "ukpga"
+        / "2026"
+        / "14.md.gz"
     )
     assert stored_markdown_path.exists()
 
@@ -235,11 +244,19 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
     version_params = next(params for sql, params in connection.executed if "insert into document_versions" in sql)
     assert version_params[0] == "point-in-time:2026-05-05:ukpga/2026/14"
     assert version_params[2] == "point_in_time"
-    assert version_params[5] == "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml"
-    assert version_params[6] == "markdown/point-in-time/2026-05-05/ukpga/2026/14.md"
+    assert version_params[5] == "xml/point-in-time/2026-05-05/ukpga/2026/14/data.xml.gz"
+    assert version_params[6] == "markdown/point-in-time/2026-05-05/ukpga/2026/14.md.gz"
     assert version_params[9] == canonical_markdown_sha256(MARKDOWN)
     stored_markdown_path = (
-        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+        tmp_path
+        / "objects"
+        / "legislation"
+        / "markdown"
+        / "point-in-time"
+        / "2026-05-05"
+        / "ukpga"
+        / "2026"
+        / "14.md.gz"
     )
     stored_xml_path = (
         tmp_path
@@ -251,9 +268,9 @@ def test_publish_markdown_to_postgres_inserts_core_document_rows(tmp_path: Path,
         / "ukpga"
         / "2026"
         / "14"
-        / "data.xml"
+        / "data.xml.gz"
     )
-    assert stored_markdown_path.read_text() == MARKDOWN
+    assert gzip.decompress(stored_markdown_path.read_bytes()).decode() == MARKDOWN
     assert stored_xml_path.exists()
     observation_params = next(params for sql, params in connection.executed if "insert into fetch_observations" in sql)
     assert observation_params[2] == "point-in-time:2026-05-05:ukpga/2026/14"
@@ -289,13 +306,21 @@ def test_publish_document_text_to_postgres_writes_objects_without_output_staging
         / "ukpga"
         / "2026"
         / "14"
-        / "data.xml"
+        / "data.xml.gz"
     )
     markdown_path = (
-        tmp_path / "objects" / "legislation" / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+        tmp_path
+        / "objects"
+        / "legislation"
+        / "markdown"
+        / "point-in-time"
+        / "2026-05-05"
+        / "ukpga"
+        / "2026"
+        / "14.md.gz"
     )
-    assert xml_path.read_bytes() == b"<Legislation />"
-    assert markdown_path.read_text() == MARKDOWN
+    assert gzip.decompress(xml_path.read_bytes()) == b"<Legislation />"
+    assert gzip.decompress(markdown_path.read_bytes()).decode() == MARKDOWN
     assert any("insert into fetch_runs" in sql for sql, _ in connection.executed)
     assert any("insert into fetch_observations" in sql for sql, _ in connection.executed)
 
@@ -421,3 +446,33 @@ def test_split_provisions_does_not_mistake_ordinary_brackets_for_an_extent(tmp_p
     )
 
     assert parse_markdown_document(ref).provisions[-1].extent is None
+
+
+def test_provision_text_sha256_is_shared_by_identical_text(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "markdown" / "point-in-time" / "2026-05-05" / "ukpga" / "2026" / "14.md"
+    markdown_path.parent.mkdir(parents=True)
+    markdown_path.write_text(MARKDOWN)
+    ref = markdown_ref_from_path(
+        markdown_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2026-05-05",
+    )
+    provisions = parse_markdown_document(ref).provisions
+
+    # The same text in a different version must land on the same content address,
+    # which is what lets an unchanged provision be stored once.
+    other_path = tmp_path / "markdown" / "point-in-time" / "2020-01-01" / "ukpga" / "2026" / "14.md"
+    other_path.parent.mkdir(parents=True)
+    other_path.write_text(MARKDOWN)
+    other_ref = markdown_ref_from_path(
+        other_path,
+        output_root=tmp_path,
+        collection="point-in-time",
+        snapshot_date="2020-01-01",
+    )
+    other = parse_markdown_document(other_ref).provisions
+
+    assert provisions[0].text_sha256 == other[0].text_sha256
+    assert provisions[0].text_sha256 != provisions[1].text_sha256
+    assert len(provisions[0].text_sha256) == 64
