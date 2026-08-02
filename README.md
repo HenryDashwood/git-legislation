@@ -28,9 +28,21 @@ Implemented pieces:
   non-canonical Markdown alongside the source PDF.
 - Deployed read API and web app on Cloudflare Workers (see Serving below).
 
-The corpus holds a broad point-in-time snapshot across all configured non-draft legislation types.
-Most records carry full text (CLML-derived or PDF-derived); the residue is image-only scans queued
-for a future OCR pass.
+The corpus holds a broad point-in-time snapshot across all configured non-draft legislation types
+(184,646 documents), plus deep revision histories for heavily amended primary legislation. Most
+records carry full text (CLML-derived or PDF-derived); the residue is image-only scans queued for a
+future OCR pass.
+
+Beyond the snapshot, the corpus also carries:
+
+- **Revision histories** — every point-in-time expression upstream offers for an act, so consecutive
+  versions can be diffed. 30 pilot acts are complete; expansion to 1,591 substantive primary acts is
+  in progress.
+- **Amendment effects** — legislation.gov.uk's Changes to Legislation register (77,125 records),
+  giving each diff an attribution: which instrument changed which provision, and when it commenced.
+- **Schedules and extent variants** — schedules live in a container sibling to `Body`, and
+  jurisdictionally divergent readings in a `Versions` container; both are walked, so the Scottish
+  text of a provision is present and diffable separately from the English one.
 
 ## Local Setup
 
@@ -125,13 +137,15 @@ on Cloudflare Workers:
 Each has its own README covering local dev (`npm run dev` runs both Workers against local Postgres and a
 simulated R2 bucket), tests, and deployment.
 
-Endpoints served by the read API:
+Endpoints served by the read API (documented for users at `/api` on the web app):
 
 - `GET /healthz`
 - `GET /corpus/summary`
 - `GET /documents?legislation_type=ukpga&year=2026&number=14&status=Prospective&metadata_only=false&limit=50&offset=0`
-- `GET /documents/ukpga/2026/14` (+ `/versions`, `/versions/latest`)
-- `GET /versions/{version_id}/provisions`, `/files`, `/content?kind=markdown|clml_xml`
+- `GET /documents/ukpga/2026/14` (+ `/versions`, `/versions/latest`, `/effects?direction=affected|affecting`)
+- `GET /versions/{version_id}/provisions`, `/provisions/{anchor}`, `/files`, `/content?kind=markdown|clml_xml`
+- `GET /diff?from={version_id}&to={version_id}` — provision-aligned diff with effect attributions
+- `GET /changesets/{document_id}` — everything one amending instrument changed
 - `GET /files/{id}/content`
 
 ## Cloud Backends
@@ -273,16 +287,17 @@ legislation, thin for most secondary), so historic coverage is patchy by constru
   renders word-level `del`/`ins` marks, with a compare form and per-version "changes from previous"
   links on every document page. Comparison is whitespace-insensitive, because upstream serves the
   same CLML both compact and pretty-printed.
-- ~~Attach effects records as annotations~~ Ingestion done: `ingest-effects` reads the Changes to
-  Legislation feeds (`/changes/{affected,affecting}/{path}/data.feed`) into `effects` +
-  `effect_provisions`, keyed on the upstream `EffectId` and idempotent on re-run. Each record carries
-  the effect type, the affecting instrument and provision, in-force date, commencement authority, and
-  the `Applied` flag saying whether the revised text already reflects it. `effects-coverage` reports
-  how many effects resolve to a local provision. Still to do: surface them on diff cards and build
-  the changeset view.
-- Changesets, not timelines: render one amending instrument as a single changeset touching many
-  documents — the genuinely novel view nobody else offers. `ingest-effects --direction affecting`
-  already collects the data for this.
+- ~~Attach effects records as annotations~~ Done: `ingest-effects` reads the Changes to Legislation
+  feeds (`/changes/{affected,affecting}/{path}/data.feed`) into `effects` + `effect_provisions`,
+  keyed on the upstream `EffectId` and idempotent on re-run. Each record carries the effect type,
+  the affecting instrument and provision, in-force date, commencement authority, and the `Applied`
+  flag. Diff cards now carry attributions, **confirmation-first**: an effect is pinned to a
+  provision only where that provision demonstrably changed between the two versions, and anything
+  that cannot be corroborated is listed separately rather than asserted. `verify-effects` measures
+  this — currently **91% of applied textual effects are confirmed** across the pilot acts.
+- ~~Changesets, not timelines~~ Done: `GET /changesets/{id}` and `/changesets/{id}` in the web app
+  render one amending instrument across every document it touched, with textual/applied/prospective
+  counts per affected act.
 - Markdown quality work, since a noisy converter means noisy diffs:
   - Add a Markdown quality audit command; compare XML structure against Markdown output for
     full-text CLML records; flag missing schedules, weak headings, table-heavy documents, and
@@ -309,8 +324,21 @@ legislation, thin for most secondary), so historic coverage is patchy by constru
   - After converter improvements, run `rerender-markdown` to re-render metadata-only stubs from
     stored XML.
 
-Gate: if the pilot experience clearly beats legislation.gov.uk, expand the version backfill; if
-not, stop having spent weeks, not a re-architecture.
+**Gate passed (2026-07-28).** The pilot showed a materially better experience than the source
+site — provision-level word diffs with amendment attribution, and a changeset view nobody else
+offers — so the backfill is being expanded to all 1,591 substantive primary acts
+(`scripts/backfill-acts.txt`, ~57,000 versions, several days of polite fetching).
+
+The pilot also earned its keep as a *bug detector*, which was the other reason to do it:
+- The converter had never emitted a single schedule — CLML keeps them in a container sibling to
+  `Body`. The corpus held 2.2M provisions and zero schedules.
+- Point-in-time snapshots were not point-in-time: provisions flagged `Match="false"` (not yet in
+  force, or already repealed) were rendered as live text, in 78% of sampled files.
+- Extent-divergent readings were absent entirely: the Scottish, Welsh and NI text of a provision
+  lives in a `Versions` container that was never walked, so devolved amendments had no text to
+  land on.
+Each was found by asking why a recorded amendment did not show up as a textual change, and each
+moved the confirmation rate: 77% → 88% → 91%.
 
 ### Contingent on the pilot: Git Repository Rendering
 

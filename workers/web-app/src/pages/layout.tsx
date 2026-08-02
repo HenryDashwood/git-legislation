@@ -21,6 +21,7 @@ export function Layout(props: { title: string; pageClass?: string; children: Chi
             </a>
             <nav class="masthead-nav" aria-label="Primary">
               <a href="/recent">Recent</a>
+              <a href="/api">API</a>
             </nav>
             <span class="masthead-note">United Kingdom legislation corpus</span>
           </div>

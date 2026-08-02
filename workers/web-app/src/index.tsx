@@ -6,6 +6,7 @@ import { LEGISLATION_TYPE_FILTER_KEYS, buildFilters, pageUrl, parseListParams } 
 import { renderMarkdown } from "./markdown";
 import { buildTimeline } from "./timeline";
 import { DetailPage } from "./pages/detail";
+import { ApiDocsPage } from "./pages/api-docs";
 import { ChangesetPage } from "./pages/changeset";
 import { DiffPage } from "./pages/diff";
 import { LandingPage } from "./pages/landing";
@@ -24,6 +25,8 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
   });
 
   app.get("/", (c) => c.redirect("/documents"));
+
+  app.get("/api", (c) => c.html(<ApiDocsPage />));
 
   app.get("/documents", async (c) => {
     const params = parseListParams(c.req.url);

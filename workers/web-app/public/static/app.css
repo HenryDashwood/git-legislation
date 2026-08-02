@@ -924,6 +924,8 @@ a.timeline-row:focus-visible {
 
 .masthead-nav {
   flex: 1 1 auto;
+  display: flex;
+  gap: 1.1rem;
 }
 
 .masthead-nav a {
@@ -1139,4 +1141,177 @@ a.timeline-row:focus-visible {
 
 .changeset-absent {
   color: var(--historic);
+}
+
+/* ---------- Landing: examples and comparison ---------- */
+
+.example-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.example-card {
+  display: block;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--paper);
+  text-decoration: none;
+  color: inherit;
+}
+
+.example-card:hover {
+  border-color: var(--accent);
+  background: var(--paper-deep);
+}
+
+.example-card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+  color: var(--accent);
+}
+
+.example-card p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.difference-lede,
+.difference-caveat {
+  max-width: 62ch;
+  line-height: 1.6;
+}
+
+.difference-caveat {
+  font-size: 0.9rem;
+  color: var(--muted);
+  border-left: 2px solid var(--hairline);
+  border-radius: 0;
+  padding-left: 0.85rem;
+}
+
+.difference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 1.25rem 0;
+}
+
+.difference-col h3 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.difference-col ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.difference-col strong {
+  color: var(--ink);
+}
+
+/* ---------- API documentation ---------- */
+
+.api-base,
+.api-code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.api-code {
+  display: block;
+  padding: 0.9rem 1rem;
+  background: var(--paper-deep);
+  border-radius: 4px;
+  font-size: 0.82rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.api-blurb {
+  max-width: 62ch;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.api-endpoint {
+  padding: 0.9rem 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.api-endpoint h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.98rem;
+}
+
+.api-endpoint h3 code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.api-method {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  padding: 0.12rem 0.45rem;
+  border: 1px solid var(--wales);
+  color: var(--wales);
+  border-radius: 3px;
+}
+
+.api-summary {
+  margin: 0 0 0.35rem;
+  max-width: 62ch;
+}
+
+.api-detail {
+  margin: 0 0 0.5rem;
+  max-width: 62ch;
+  font-size: 0.9rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.api-params {
+  margin: 0.5rem 0;
+  font-size: 0.88rem;
+}
+
+.api-param {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.15rem 0;
+}
+
+.api-param dt {
+  flex: 0 0 11rem;
+}
+
+.api-param dd {
+  margin: 0;
+  color: var(--muted);
+}
+
+.api-example {
+  margin: 0.4rem 0 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.api-notes {
+  padding-left: 1.1rem;
+  line-height: 1.8;
+  max-width: 68ch;
 }
