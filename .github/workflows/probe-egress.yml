@@ -1,0 +1,61 @@
+name: Probe legislation.gov.uk egress
+
+# Everything about moving ingestion off the laptop depends on one unknown: does
+# legislation.gov.uk serve a datacentre IP? We know its dynamic PDF generator
+# refuses Cloudflare Workers egress with a 404 even with a User-Agent, and that
+# static /pdfs/ files serve fine — so the block is specific, not blanket. This
+# probe answers the question for GitHub's runners before any pipeline is built
+# around them.
+#
+# Run it from the Actions tab (workflow_dispatch). It changes nothing.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report runner egress address
+        run: curl -s --max-time 20 https://api.ipify.org || true
+
+      - name: Probe the endpoints ingestion actually uses
+        run: |
+          UA='git-legislation/0.1'
+          fail=0
+          probe() {
+            local label="$1" url="$2"
+            code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 40 -A "$UA" "$url" || echo 000)
+            size=$(wc -c < /tmp/body | tr -d ' ')
+            printf '%-34s %s  %8s bytes  %s\n' "$label" "$code" "$size" "$url"
+            # A 200 that is actually an HTML choice page is a failure in disguise.
+            if [ "$code" != "200" ]; then fail=1; fi
+          }
+
+          probe "document XML (as-made)"      "https://www.legislation.gov.uk/ukpga/1971/77/data.xml"
+          probe "document XML (point in time)" "https://www.legislation.gov.uk/ukpga/1971/77/2026-05-05/data.xml"
+          probe "year feed"                   "https://www.legislation.gov.uk/ukpga/2026/data.feed"
+          probe "publication log"             "https://www.legislation.gov.uk/update/2026-07-16/legislation/data.feed?event=published&format=xml&page=1"
+          probe "changes (effects) feed"      "https://www.legislation.gov.uk/changes/affected/ukpga/1971/77/data.feed?page=1"
+          probe "static print PDF"            "https://www.legislation.gov.uk/ukpga/1971/77/pdfs/ukpga_19710077_en.pdf"
+
+          echo
+          echo "--- content sanity (XML should start with <Legislation, not <html) ---"
+          curl -s --max-time 40 -A "$UA" "https://www.legislation.gov.uk/ukpga/1971/77/data.xml" | head -c 80
+          echo
+
+          exit $fail
+
+      - name: Probe sustained rate behaviour
+        # Ingestion makes tens of thousands of requests. A datacentre IP may be
+        # throttled sooner than a domestic one; 429/432 are the codes to watch.
+        run: |
+          UA='git-legislation/0.1'
+          codes=""
+          for n in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -A "$UA" \
+              "https://www.legislation.gov.uk/ukpga/2020/$n/data.xml" || echo 000)
+            codes="$codes $code"
+          done
+          echo "30 sequential fetches:$codes"
+          echo "$codes" | tr ' ' '\n' | sort | uniq -c | sort -rn

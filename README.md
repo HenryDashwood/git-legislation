@@ -266,17 +266,22 @@ Phases 1 and 2 are complete. What follows is what is left.
 The gate passed on 2026-07-28, so the version backfill is expanding from 30 pilot acts to 1,591
 substantive primary acts (`scripts/backfill-acts.txt`, ~57,000 versions).
 
-**Throughput is the blocker.** Measured at ~32 versions/hour against the largest acts — these are
-multi-megabyte documents and the fetch loop is strictly sequential — which puts the full set at
-months, not days. Three things would fix it, and they compose:
+**Throughput is the blocker, and it is network-bound.** Profiled on a large act: fetch 8.5s,
+render 0.3s, parse 0.14s, write 1.5s. Measured throughput is ~136 versions/hour sequential, which
+puts the full set at ~17 days. Concurrency is therefore the lever that matters:
 
-- **Prioritise.** Value is concentrated in the first few hundred acts. Sampling the timeline (one
-  expression per year rather than all of them) would cut volume 5–10× at the cost of not being able
-  to diff two amendments within the same year.
-- **Parallelise.** The fetch client is sequential. Modest concurrency needs care around the
+| | sequential | 4 concurrent | 8 concurrent |
+|---|---|---|---|
+| 57,000 versions | 17.5 days | 4.4 days | 2.2 days |
+
+- **Parallelise the fetch client**, which is strictly sequential today. Needs care around the
   429/432 rate-limit handling, which has never been tested under load.
-- **Move it off the laptop.** A remote runner would decouple the multi-week crawl from this machine
-  and from the daily poll.
+- **Prioritise.** Value is concentrated in the first few hundred acts. Sampling the timeline (one
+  expression per year) would cut volume 5–10× at the cost of not being able to diff two amendments
+  made in the same year.
+- ~~Move it off the laptop~~ Provisioned: `scripts/hetzner/` holds cloud-init and a supervised
+  systemd service for a small Hetzner box. It writes rows straight to the serving database and
+  copies objects to R2 hourly, so there is no local Postgres and no sync step.
 
 ### Next — text quality
 
@@ -325,6 +330,11 @@ A git repo is a *rendering* generated from the canonical corpus, not a storage s
 
 ### Operations
 
+- ~~Run the daily poll off the laptop~~ Provisioned: `.github/workflows/poll.yml` runs it on
+  GitHub Actions at 06:30 UTC, writing through `DB_URL` straight to the serving database and
+  copying objects to R2. Gated on `.github/workflows/probe-egress.yml` confirming that
+  legislation.gov.uk serves a datacentre IP — its dynamic PDF generator refuses Cloudflare egress,
+  so this is not a given.
 - **Refresh effects incrementally.** `effects_cursor` records each document's last-modified
   watermark, but nothing consumes it yet — effects are only ever fully re-ingested.
 - **Compress the drained trees.** `extracted-text/` and `reports/` are compressible but live only

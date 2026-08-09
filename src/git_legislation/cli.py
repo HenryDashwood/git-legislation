@@ -61,6 +61,11 @@ from publishing import (
     render_version_hash_normalization_report,
     rerender_document_versions,
 )
+from statutory_duties import (
+    iter_dataset_files,
+    load_duties_csvs,
+    render_duties_ingest_report,
+)
 
 app = typer.Typer(no_args_is_help=True)
 COUNT_TABLES = (
@@ -578,6 +583,46 @@ def ingest_effects_command(
     typer.echo(render_effects_ingest_report(report))
 
 
+@app.command("ingest-statutory-duties")
+def ingest_statutory_duties_command(
+    dataset_dir: Annotated[
+        Path,
+        typer.Argument(help="Folder of Statutory Powers & Duties CSVs from research.legislation.gov.uk."),
+    ],
+    dataset_date: Annotated[
+        str,
+        typer.Option("--dataset-date", help="Release date as YYYY-MM-DD, e.g. 2026-03-30 for the 20260330 folder."),
+    ],
+    database_url: Annotated[
+        str | None,
+        typer.Option("--database-url", envvar="DB_URL", help="Postgres connection URL. Defaults to DB_URL."),
+    ] = None,
+) -> None:
+    """Load the Statutory Powers & Duties dataset into the duties schema.
+
+    Stages every CSV row, collapses the per-body row duplication into
+    duties.duties plus duties.duty_actor_matches, and links each duty to
+    documents.id where the enactment is in the corpus (EU legislation is not,
+    so those rows keep a null document_id). Re-running skips duties already
+    present, so a partial load can be resumed by running again.
+    """
+    database_url = _database_url_or_raise(database_url)
+    csv_paths = iter_dataset_files(dataset_dir)
+    if not csv_paths:
+        raise click.ClickException(f"No CSV files found in {dataset_dir}.")
+
+    with psycopg.connect(database_url) as connection:
+        report = load_duties_csvs(
+            connection,
+            csv_paths,
+            dataset_date=dataset_date,
+            log=typer.echo,
+        )
+        connection.commit()
+
+    typer.echo(render_duties_ingest_report(report))
+
+
 @app.command("effects-coverage")
 def effects_coverage_command(
     source_paths: Annotated[
@@ -727,9 +772,7 @@ def rerender_document_versions_command(
             connection.commit()
             # The id is logged on every document so an interrupted --all run can
             # resume from the last line of its log with --start-after.
-            typer.echo(
-                f"done {source_path}: {report.rerendered} re-rendered so far ({report.scanned} scanned)"
-            )
+            typer.echo(f"done {source_path}: {report.rerendered} re-rendered so far ({report.scanned} scanned)")
     typer.echo(render_rerender_report(report))
 
 

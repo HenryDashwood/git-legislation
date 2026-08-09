@@ -1,0 +1,81 @@
+name: Daily Publication Log poll
+
+# Replaces the launchd job on the laptop, which only ran when the machine was
+# awake. Remotely the pipeline is simpler than it is locally: poll-publication-log
+# writes rows through DB_URL, so pointing that at PlanetScale means the serving
+# database is written directly — no local Postgres, no delta-sync, and no chance
+# of the local and serving copies diverging.
+#
+# Objects go to a workspace object store and are copied (never synced) to R2.
+# Deleting from R2 stays a deliberate, local operation: see scripts/prune-r2.sh.
+#
+# Requires repository secrets:
+#   PSCALE_URL              serving Postgres DSN
+#   R2_ACCESS_KEY_ID        \
+#   R2_SECRET_ACCESS_KEY     > R2 credentials, as in .envrc
+#   R2_URL                  /
+
+on:
+  schedule:
+    # 06:30 UTC daily. legislation.gov.uk publishes overnight, so this picks up
+    # the previous day's instruments.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+# Never let two polls overlap: the cursor is advanced at the end of a run, so a
+# second run starting mid-flight would re-fetch the same window.
+concurrency:
+  group: publication-log-poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DB_URL: ${{ secrets.PSCALE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install rclone
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rclone
+
+      - name: Poll the Publication Log
+        run: uv run git-legislation poll-publication-log
+
+      - name: Extract legal dates for newly ingested documents
+        # Scans every undated document, but only those whose objects are in this
+        # workspace can be dated — which is exactly what was just ingested. The
+        # futile checks are cheap; the proper fix is folding this into publish.
+        run: uv run git-legislation extract-legal-dates
+
+      - name: Copy new objects to R2
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+          R2_URL: ${{ secrets.R2_URL }}
+        run: |
+          export RCLONE_CONFIG_R2_ENDPOINT="${R2_URL%/*}"
+          for subtree in markdown xml; do
+            if [ -d "var/object-store/legislation/$subtree" ]; then
+              rclone copy "var/object-store/legislation/$subtree" \
+                "r2:british-legislation/$subtree" --transfers 8 --log-level NOTICE
+            fi
+          done
+
+      - name: Summarise
+        if: always()
+        run: |
+          echo "### Poll result" >> "$GITHUB_STEP_SUMMARY"
+          count=$(find var/object-store -type f 2>/dev/null | wc -l | tr -d ' ')
+          echo "Objects written this run: $count" >> "$GITHUB_STEP_SUMMARY"

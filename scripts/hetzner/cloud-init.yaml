@@ -1,0 +1,71 @@
+#cloud-config
+# Provisioning for the backfill worker.
+#
+# The backfill is network-bound, not compute-bound: fetching is 8.5s of a ~10.5s
+# version, so a small shared-vCPU box is the right shape. What it does need is
+# disk (the object store grows by ~11 GB gzipped) and to stay up for days.
+#
+# Deliberately NOT ephemeral. The work is one long, polite, resumable crawl —
+# provisioning and tearing down machines per unit of work would add orchestration
+# for no gain. One box, one systemd service, stopped when the queue drains.
+#
+# Create with:
+#   hcloud server create --name backfill --type cax11 --image ubuntu-24.04 \
+#     --location nbg1 --ssh-key <key> --user-data-from-file scripts/hetzner/cloud-init.yaml
+#
+# cax11 (2 vCPU ARM, 4 GB, 40 GB disk) is ample and about €4/month.
+
+package_update: true
+packages:
+  - git
+  - curl
+  - rclone
+  - postgresql-client
+  - ca-certificates
+
+write_files:
+  - path: /etc/systemd/system/backfill.service
+    content: |
+      [Unit]
+      Description=git-legislation version backfill
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=backfill
+      WorkingDirectory=/opt/git-legislation
+      EnvironmentFile=/etc/git-legislation.env
+      ExecStart=/opt/git-legislation/scripts/hetzner/run-backfill.sh
+      # The crawl is resumable by design (already-present version dates are
+      # skipped), so a restart costs a re-scan, not lost work.
+      Restart=on-failure
+      RestartSec=120
+      StandardOutput=append:/var/log/backfill.log
+      StandardError=append:/var/log/backfill.log
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/git-legislation.env
+    permissions: "0600"
+    content: |
+      # Fill these in before starting the service:
+      #   DB_URL              serving Postgres DSN (writes go straight there)
+      #   R2_ACCESS_KEY_ID
+      #   R2_SECRET_ACCESS_KEY
+      #   R2_URL
+      DB_URL=
+      R2_ACCESS_KEY_ID=
+      R2_SECRET_ACCESS_KEY=
+      R2_URL=
+
+runcmd:
+  - useradd --create-home --shell /bin/bash backfill
+  - git clone https://github.com/HenryDashwood/git-legislation.git /opt/git-legislation
+  - chown -R backfill:backfill /opt/git-legislation /var/log
+  - su - backfill -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  - su - backfill -c 'cd /opt/git-legislation && ~/.local/bin/uv sync'
+  - systemctl daemon-reload
+  # Not enabled automatically: fill in /etc/git-legislation.env first, then
+  #   systemctl enable --now backfill
