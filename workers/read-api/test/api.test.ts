@@ -1,7 +1,13 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { createApp, type Env } from "../src/index";
-import type { DocumentListFilters, EffectFilters, Repository, Row } from "../src/types";
+import type {
+  DocumentListFilters,
+  EffectFilters,
+  PowerSearchPlan,
+  Repository,
+  Row,
+} from "../src/types";
 
 const DOCUMENT: Row = {
   id: "ukpga/2026/14",
@@ -29,6 +35,23 @@ const VERSION: Row = {
   word_count: 1234,
   is_metadata_only: false,
   created_at: "2026-05-05T12:00:00Z",
+};
+
+const POWER: Row = {
+  id: 554637,
+  document_id: "ukpga/1989/29",
+  enactment_title: "Electricity Act 1989",
+  enactment_type: "ukpga",
+  section_path: "section/96",
+  actor: "Secretary of State",
+  action: "give directions of a general character to a licence holder",
+  condition: "must consult the person to whom the direction is to be given",
+  modality: "power",
+  instrument: "direct",
+  is_direction_power: true,
+  si_procedure: null,
+  targets: ["licence holder"],
+  score: "1.4260",
 };
 
 const MARKDOWN_FILE: Row = {
@@ -185,6 +208,11 @@ class FakeRepository implements Repository {
   async getFile(fileId: number): Promise<Row | null> {
     this.calls["getFile"] = fileId;
     return fileId === 1 ? MARKDOWN_FILE : null;
+  }
+
+  async searchPowers(plan: PowerSearchPlan): Promise<Row[]> {
+    this.calls["searchPowers"] = plan;
+    return [POWER];
   }
 }
 
@@ -523,5 +551,58 @@ describe("compressed object serving", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(plain);
+  });
+});
+
+describe("POST /powers/search", () => {
+  it("applies the caller's plan and returns ranked powers", async () => {
+    const repository = new FakeRepository();
+    const response = await appWith(repository).request("/powers/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        targets: ["NESO", "licence holder"],
+        instruments: ["direct", "inspect"],
+        terms: ["civil emergency"],
+        domain: ["electricity"],
+        actor: "minister",
+        direction_only: true,
+        limit: 5,
+      }),
+    }, testEnv);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { items: Row[] };
+    expect(body.items[0]?.["section_path"]).toBe("section/96");
+    const plan = repository.calls["searchPowers"] as PowerSearchPlan;
+    expect(plan.targets).toEqual(["NESO", "licence holder"]);
+    expect(plan.instruments).toEqual(["direct", "inspect"]);
+    expect(plan.directionOnly).toBe(true);
+    expect(plan.limit).toBe(5);
+    // "minister" expands to the collective office, never a single portfolio.
+    expect(plan.actor).toContain("secretary of state");
+    expect(plan.actor).toContain("scottish ministers");
+  });
+
+  it("drops unknown instruments and clamps the limit", async () => {
+    const repository = new FakeRepository();
+    await appWith(repository).request("/powers/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ instruments: ["direct", "nonsense"], limit: 9999 }),
+    }, testEnv);
+    const plan = repository.calls["searchPowers"] as PowerSearchPlan;
+    expect(plan.instruments).toEqual(["direct"]);
+    expect(plan.limit).toBe(100);
+    expect(plan.modality).toBe("power");
+    expect(plan.actor).toBeNull();
+  });
+
+  it("rejects a non-JSON body", async () => {
+    const response = await appWith(new FakeRepository()).request("/powers/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not json",
+    }, testEnv);
+    expect(response.status).toBe(400);
   });
 });

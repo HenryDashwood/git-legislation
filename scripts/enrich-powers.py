@@ -168,6 +168,10 @@ class Sink:
     def __init__(self, total: int, already_done: int):
         self.handle = open(OUTPUT_PATH, "a")
         self.done = already_done
+        # Rows carried in from an earlier run don't count toward this run's
+        # rate - without this a resume reports a meaningless rate, because it
+        # divides every previously-enriched row by seconds of new runtime.
+        self.resumed_at = already_done
         self.total = total
         self.failed: list[int] = []
         self.prompt_tokens = 0
@@ -183,7 +187,7 @@ class Sink:
         self.completion_tokens += completion_tokens
         if self.done % 5000 < len(rows):
             elapsed = time.time() - self.started
-            rate = (self.done * 3600 / elapsed) if elapsed else 0
+            rate = ((self.done - self.resumed_at) * 3600 / elapsed) if elapsed else 0
             print(
                 f"{self.done}/{self.total} ({100 * self.done / self.total:.1f}%) "
                 f"~{rate:.0f} rows/h, tokens {self.prompt_tokens} in / {self.completion_tokens} out",

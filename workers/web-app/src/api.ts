@@ -3,6 +3,8 @@
 export interface ApiEnv {
   API: Fetcher;
   ASSETS: Fetcher;
+  /** Optional: enables plain-English question rewriting on /powers. */
+  OPENROUTER_API_KEY?: string;
 }
 
 export class ApiError extends Error {
@@ -23,6 +25,19 @@ export class ReadApiClient {
     const response = await this.api.fetch(`https://read-api${path}`);
     if (!response.ok) {
       throw new ApiError(`API request failed: ${response.status} for ${path}`, response.status);
+    }
+    return (await response.json()) as Json;
+  }
+
+  /** Ranked powers for a search plan. POST because the plan is a structured body. */
+  async searchPowers(plan: Json): Promise<Json> {
+    const response = await this.api.fetch("https://read-api/powers/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(plan),
+    });
+    if (!response.ok) {
+      throw new ApiError(`API request failed: ${response.status} for /powers/search`, response.status);
     }
     return (await response.json()) as Json;
   }

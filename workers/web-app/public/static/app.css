@@ -1315,3 +1315,396 @@ a.timeline-row:focus-visible {
   line-height: 1.8;
   max-width: 68ch;
 }
+
+/* ---------- Powers search ---------- */
+/* The query plan is the filter panel: the model fills it in, the reader
+   corrects it. Chips are form controls, so an edit is a plain GET. */
+
+.powers-form .ask {
+  border-top: 3px solid var(--ink);
+  padding-top: 1.1rem;
+}
+
+.powers-form .ask label {
+  display: block;
+  font-family: var(--font-serif);
+  font-size: 1.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.ask-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.ask-row input {
+  flex: 1;
+  font-family: var(--font-serif);
+  font-size: 1.15rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--ink);
+}
+
+.powers-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(15rem, 0.85fr);
+  gap: 2.5rem;
+  align-items: start;
+  margin-top: 1.75rem;
+}
+
+@media (max-width: 55rem) {
+  .powers-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.reading {
+  border-top: 3px solid var(--ink);
+  border-bottom: 1px solid var(--hairline);
+  padding: 1rem 0 1.25rem;
+  margin-bottom: 1.75rem;
+}
+
+.reading h2 {
+  font-size: 1.25rem;
+  margin: 0 0 0.2rem;
+}
+
+.reading .sub {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0 0 1rem;
+  max-width: 62ch;
+}
+
+.facet {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--hairline);
+  align-items: baseline;
+}
+
+.facet:first-of-type {
+  border-top: 0;
+}
+
+@media (max-width: 40rem) {
+  .facet {
+    grid-template-columns: 1fr;
+  }
+}
+
+.facet-name {
+  font-size: 0.72rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.facet-empty {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-style: italic;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--hairline);
+  background: var(--paper-deep);
+  padding: 0.2rem 0.55rem;
+}
+
+.chip-remove {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+}
+
+.chip-remove:hover {
+  color: var(--error);
+}
+
+.chip-toggle {
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.chip-toggle.on {
+  opacity: 1;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.chip-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.chip-toggle:focus-within {
+  outline: 3px solid var(--focus);
+}
+
+.chip-add {
+  font-size: 0.85rem;
+  border: 1px dashed var(--hairline);
+  background: transparent;
+  padding: 0.2rem 0.55rem;
+  width: 8rem;
+  color: var(--ink);
+}
+
+.rerun {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.rerun-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.rerun-note.changed {
+  color: var(--accent);
+}
+
+.rerun-note.changed::before {
+  content: "Reading edited \2014 ";
+}
+
+/* ---------- Power results ---------- */
+
+.power-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.power {
+  border-top: 1px solid var(--hairline);
+  padding: 0.95rem 0 1rem;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0 0.75rem;
+}
+
+.power:first-child {
+  border-top: 3px solid var(--ink);
+}
+
+.power-num {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent);
+  padding-top: 0.15rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.power-cite {
+  font-family: var(--font-serif);
+  font-size: 1.08rem;
+  margin: 0 0 0.3rem;
+}
+
+.power-section {
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  margin-left: 0.5rem;
+}
+
+.power-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0 0 0.45rem;
+}
+
+.badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  color: var(--muted);
+}
+
+.badge-direction {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge-score {
+  border-style: dashed;
+  font-variant-numeric: tabular-nums;
+}
+
+.power-text {
+  font-family: var(--font-serif);
+  margin: 0 0 0.4rem;
+}
+
+/* A power and a power-subject-to-consultation are different powers in
+   practice, so the limit gets its own rule rather than sitting in the text. */
+.power-limit {
+  border-left: 6px solid var(--ni);
+  padding: 0.1rem 0 0.1rem 0.75rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.93rem;
+}
+
+.power-limit b {
+  font-size: 0.7rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ni);
+  display: block;
+}
+
+.power-targets {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+.power-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.notice-block {
+  border: 1px solid var(--ink);
+  border-left: 6px solid var(--ni);
+  padding: 0.8rem 1rem;
+  margin: 1.5rem 0 0;
+  font-size: 0.92rem;
+  max-width: 66ch;
+}
+
+.notice-block p {
+  margin: 0;
+}
+
+/* ---------- Searching indicator ---------- */
+/* Pinned to the bottom of the viewport: it stays visible however far the
+   reader has scrolled into a long results list, and unlike a top bar it
+   neither covers the masthead nor shifts the page while they wait. */
+
+.searching {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--ink);
+  color: var(--paper);
+  border-top: 3px solid var(--focus);
+}
+
+.searching-inner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+
+.searching-text {
+  font-size: 0.92rem;
+}
+
+.searching-bar {
+  display: block;
+  position: relative;
+  width: 7rem;
+  height: 0.4rem;
+  flex: none;
+  background: var(--historic);
+  overflow: hidden;
+}
+
+.searching-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: var(--focus);
+  animation: searching-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes searching-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+/* Motion is decoration here; the wording carries the message. */
+@media (prefers-reduced-motion: reduce) {
+  .searching-bar-fill {
+    animation: none;
+    width: 100%;
+  }
+}
+
+.powers-form button[disabled] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* A degraded reading changes what the results mean, so it is flagged rather
+   than styled like ordinary help text. */
+.reading .sub-warning {
+  border-left: 6px solid var(--ni);
+  padding-left: 0.75rem;
+  color: var(--ink);
+}
+
+/* The filter panel styles every label as a grid row (label above control),
+   which is right for selects but breaks a checkbox and its text. */
+.filters .check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.filters .check label {
+  display: inline;
+  font-size: 0.9rem;
+}
+
+.filters .check input {
+  width: auto;
+  flex: none;
+  accent-color: var(--accent);
+}

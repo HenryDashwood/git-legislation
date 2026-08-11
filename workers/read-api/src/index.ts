@@ -5,7 +5,12 @@ import { cors } from "hono/cors";
 import { createSql } from "./db";
 import { attachEffects, computeProvisionDiff } from "./diff";
 import { PostgresRepository } from "./repository";
-import { LEGISLATION_TYPE_CODES, type Repository } from "./types";
+import {
+  LEGISLATION_TYPE_CODES,
+  MINISTERIAL_ACTOR_PATTERN,
+  POWER_INSTRUMENTS,
+  type Repository,
+} from "./types";
 
 export interface Env {
   HYPERDRIVE: Hyperdrive;
@@ -46,6 +51,48 @@ export function createApp(options: AppOptions = {}): Hono<{ Bindings: Env; Varia
   });
 
   app.get("/healthz", (c) => c.json({ status: "ok" }));
+
+  // Ranked search over statutory powers. The caller supplies a plan (from a
+  // rewritten question or straight from the filter controls); no query
+  // understanding happens here, so the ranking is identical for every client.
+  app.post("/powers/search", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ detail: "Body must be JSON" }, 400);
+    }
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+
+    const instruments = strings(body["instruments"]).filter((i) => POWER_INSTRUMENTS.has(i));
+    const modality = body["modality"] === "duty" || body["modality"] === "both" ? body["modality"] : "power";
+    const legislationKind =
+      body["legislation_kind"] === "primary" || body["legislation_kind"] === "secondary"
+        ? body["legislation_kind"]
+        : "all";
+    const limit = Math.min(Math.max(Number(body["limit"] ?? 20) || 20, 1), 100);
+    const actorRaw = typeof body["actor"] === "string" ? body["actor"].trim() : "";
+    // "minister" is the collective office: Secretary of State is held in
+    // commission, so it is never split by portfolio.
+    const actor =
+      actorRaw === "" || actorRaw === "any" ? null : actorRaw === "minister" ? MINISTERIAL_ACTOR_PATTERN : actorRaw;
+
+    const items = await c.get("repository").searchPowers({
+      targets: strings(body["targets"]),
+      instruments,
+      terms: strings(body["terms"]),
+      domain: strings(body["domain"]),
+      actor,
+      modality,
+      extent: typeof body["extent"] === "string" && body["extent"] !== "" ? body["extent"] : null,
+      legislationKind,
+      directionOnly: body["direction_only"] === true,
+      withConditionsOnly: body["with_conditions_only"] === true,
+      limit,
+    });
+    return c.json({ items, limit });
+  });
 
   app.get("/corpus/summary", async (c) => {
     return c.json({ items: await c.get("repository").summarizeDocuments() });

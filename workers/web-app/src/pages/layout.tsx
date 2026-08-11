@@ -20,6 +20,7 @@ export function Layout(props: { title: string; pageClass?: string; children: Chi
               git<span class="brand-dash">&#8211;</span>legislation
             </a>
             <nav class="masthead-nav" aria-label="Primary">
+              <a href="/powers">Powers</a>
               <a href="/recent">Recent</a>
               <a href="/api">API</a>
             </nav>

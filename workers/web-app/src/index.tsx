@@ -13,6 +13,14 @@ import { LandingPage } from "./pages/landing";
 import { ContentPartial, FilesPartial, ProvisionsPartial } from "./pages/partials";
 import { FEED_PAGE_SIZE, FeedItems, RecentPage } from "./pages/recent";
 import { Results, SearchPage } from "./pages/search";
+import { PowersPage } from "./pages/powers";
+import {
+  filtersFromParams,
+  planFromParams,
+  planFromQuestion,
+  planFromQuestionText,
+  planIsEmpty,
+} from "./powers";
 
 type Variables = { api: ReadApiClient };
 
@@ -27,6 +35,65 @@ export function createApp(options: { api?: (env: ApiEnv) => ReadApiClient } = {}
   app.get("/", (c) => c.redirect("/documents"));
 
   app.get("/api", (c) => c.html(<ApiDocsPage />));
+
+  // Task-first search over statutory powers. The question is rewritten into a
+  // plan, the plan is shown as editable chips, and every state is a plain GET
+  // so results are shareable and survive the back button.
+  app.get("/powers", async (c) => {
+    const url = new URL(c.req.url);
+    const params = url.searchParams;
+    const question = (params.get("q") ?? "").trim();
+    const filters = filtersFromParams(params);
+    const editedPlan = planFromParams(params);
+    // Re-read only when the question was submitted fresh; editing chips must
+    // not have the model silently overwrite the correction.
+    const shouldReread = params.get("reread") === "1" && question !== "";
+    let plan = editedPlan;
+    let readStatus: "read" | "no_key" | "unavailable" | "not_attempted" = "not_attempted";
+    if (shouldReread) {
+      const read = await planFromQuestion(question, c.env.OPENROUTER_API_KEY);
+      plan = read.plan ?? planFromQuestionText(question);
+      readStatus = read.status;
+    } else if (planIsEmpty(editedPlan) && question !== "") {
+      plan = planFromQuestionText(question);
+    }
+
+    const searched = question !== "" || !planIsEmpty(plan);
+    let results: Json[] = [];
+    let error: string | null = null;
+    if (searched) {
+      try {
+        const payload = await c.get("api").searchPowers({
+          targets: plan.targets,
+          instruments: plan.instruments,
+          terms: plan.terms,
+          domain: plan.domain,
+          actor: filters.actor,
+          modality: filters.modality,
+          legislation_kind: filters.legislationKind,
+          direction_only: filters.directionOnly,
+          with_conditions_only: filters.withConditionsOnly,
+          limit: filters.limit,
+        });
+        results = (payload["items"] ?? []) as Json[];
+      } catch (caught) {
+        error = caught instanceof ApiError ? caught.message : String(caught);
+      }
+    }
+
+    return c.html(
+      <PowersPage
+        question={question}
+        plan={plan}
+        filters={filters}
+        results={results}
+        searched={searched}
+        readStatus={readStatus}
+        error={error}
+      />,
+    );
+  });
+
 
   app.get("/documents", async (c) => {
     const params = parseListParams(c.req.url);

@@ -1,7 +1,13 @@
 /** Read-only SQL repository, ported from src/git_legislation_api/repositories.py. */
 
 import type { Sql } from "postgres";
-import type { DocumentListFilters, EffectFilters, Repository, Row } from "./types";
+import type {
+  DocumentListFilters,
+  EffectFilters,
+  PowerSearchPlan,
+  Repository,
+  Row,
+} from "./types";
 
 const EFFECT_COLUMNS = `
   e.id,
@@ -49,6 +55,153 @@ const VERSION_COLUMNS = `
   word_count,
   is_metadata_only,
   created_at
+`;
+
+/**
+ * Scores a power against a search plan. The weights are deliberately in SQL
+ * rather than the caller: ranking depends on columns only the database has
+ * (resolved targets, act-scoped class membership), and keeping it here means
+ * the web app and any future API consumer rank identically.
+ *
+ * Weights were tuned against the acceptance question "force NESO to give me
+ * information about a blackout", which must return Electricity Act 1989 s.96
+ * in the top few. They are hand-set and want a proper eval set.
+ */
+/**
+ * Postgres array literal for a text[] bind. sql.unsafe() passes parameters
+ * through untouched, so a JS array arrives as "a,b,c" and Postgres rejects it;
+ * the literal form has to be built (and escaped) here.
+ */
+export function toPgTextArray(values: string[]): string {
+  const escaped = values.map((value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+  return `{${escaped.join(",")}}`;
+}
+
+/**
+ * Build a websearch_to_tsquery string from the plan's terms.
+ *
+ * Each term becomes an AND of its words rather than a quoted phrase, and the
+ * terms are OR-ed together. Phrases were too strict to be useful: the term
+ * "deprivation of citizenship" did not match "deprive a person of citizenship
+ * status" (s.40 British Nationality Act 1981) because the words are not
+ * adjacent, even though both stem identically.
+ *
+ * "or", "and" and a leading "-" are websearch operators, so they are stripped
+ * from inside a term - otherwise a term like "peace order and good
+ * government" would silently reparse into something else.
+ */
+export function buildTsquery(terms: string[]): string {
+  const cleaned = terms
+    .map((term) =>
+      term
+        .replace(/["()]/g, " ")
+        .replace(/(^|\s)-+/g, " ")
+        .split(/\s+/)
+        .filter((word) => word !== "" && !["or", "and"].includes(word.toLowerCase()))
+        .join(" ")
+        .trim(),
+    )
+    .filter((term) => term !== "");
+  // An empty query matches nothing; "power" keeps a target-only search working.
+  return cleaned.join(" OR ") || "power";
+}
+
+const POWER_SEARCH_SQL = `
+with target_hits as (
+  -- One branch per way a power can be "about" a body, unioned rather than
+  -- OR-ed: a three-table OR forces a scan of every target row, while each
+  -- branch on its own uses the trigram index.
+  select t.duty_id
+  from duties.power_targets t
+  where t.target_text ilike any ($2::text[])
+  union
+  select t.duty_id
+  from duties.power_targets t
+  join orgs.entities e on e.id = t.entity_id
+  where e.name ilike any ($2::text[])
+  union
+  -- ...and powers addressed to a class the body belongs to, but only within
+  -- the Act that defines the class: "licence holder" means something
+  -- different in every enactment.
+  select t.duty_id
+  from duties.power_targets t
+  join duties.duties dd on dd.id = t.duty_id
+  join orgs.entity_class_members m
+    on m.class_id = t.entity_id and m.document_id = dd.document_id
+  join orgs.entities member on member.id = m.entity_id
+  where member.name ilike any ($2::text[])
+),
+-- Candidates are bounded before scoring. Ranking touches the heap for every
+-- match, so a broad term ("report" matches 58,704 powers on its own) would
+-- otherwise decide how long the page takes.
+matched as (
+  select d.id
+  from duties.duties d
+  where d.action_tsv @@ websearch_to_tsquery('english', $1)
+    and ($5::text = 'both' or d.modality = $5::text)
+    and ($6::text is null or d.actor ~* $6::text)
+  -- Ordered before the cap. An unordered limit silently hid the right answer
+  -- more than once (s.77 Town and Country Planning Act 1990, s.40 British
+  -- Nationality Act 1981) and cost ~0.02s to fix.
+  order by ts_rank(d.action_tsv, websearch_to_tsquery('english', $1)) desc
+  limit 4000
+),
+candidates as (
+  select id from matched
+  union
+  select duty_id as id from target_hits
+),
+ranked as (
+  select
+    d.id,
+    d.document_id,
+    d.enactment_title,
+    d.enactment_type,
+    d.section_path,
+    d.section_uri,
+    d.actor,
+    d.action,
+    d.condition,
+    d.modality,
+    pe.instrument,
+    pe.is_direction_power,
+    pe.si_procedure,
+    round((
+        ts_rank(d.action_tsv, websearch_to_tsquery('english', $1))
+      + case when th.duty_id is not null then 0.40 else 0 end
+      + case when pe.instrument = any ($3::text[]) then 0.25 else 0 end
+      + case when pe.is_direction_power and 'direct' = any ($3::text[]) then 0.30 else 0 end
+      + case when $4::text <> '' and d.enactment_title ~* $4::text then 0.25 else 0 end
+      + case when $4::text <> '' and d.action ~* $4::text then 0.20 else 0 end
+    )::numeric, 4) as score
+  from candidates c
+  join duties.duties d on d.id = c.id
+  join duties.power_enrichments pe on pe.duty_id = d.id
+  left join target_hits th on th.duty_id = d.id
+  where
+    ($5::text = 'both' or d.modality = $5::text)
+    and ($6::text is null or d.actor ~* $6::text)
+    and ($7::boolean is not true or pe.is_direction_power)
+    and ($8::boolean is not true or d.condition is not null)
+    and ($9::text = 'all'
+         or ($9::text = 'primary' and d.enactment_type in ('ukpga','asp','anaw','asc','apni','aep','apgb','aip','nia','ukla','ukcm','mwa','mnia','aosp','ukppa','gbla'))
+         or ($9::text = 'secondary' and d.enactment_type in ('uksi','ssi','wsi','nisr','nisi','nisro','eur','eudn','eudr')))
+  order by score desc, d.id
+  limit $10
+)
+-- The per-power target list is looked up only for the rows actually returned;
+-- inside the ranked CTE it would run for every candidate before the limit.
+select
+  ranked.*,
+  coalesce(
+    (
+      select jsonb_agg(distinct pt.target_text)
+      from duties.power_targets pt where pt.duty_id = ranked.id
+    ),
+    '[]'::jsonb
+  ) as targets
+from ranked
+order by score desc, id
 `;
 
 export class PostgresRepository implements Repository {
@@ -271,6 +424,25 @@ export class PostgresRepository implements Repository {
     const rows = await this.sql.unsafe(_filesSql("df.id = $1"), [fileId]);
     return rows[0] ?? null;
   }
+  async searchPowers(plan: PowerSearchPlan): Promise<Row[]> {
+    const targetPatterns = plan.targets.filter((t) => t.trim() !== "").map((t) => `%${t.trim()}%`);
+    // Terms only. Targets have their own matching path (target_hits), and
+    // feeding them to the text query as well floods it: a target of "person"
+    // took one search from 50 candidate rows to 13,536.
+    const tsquery = buildTsquery(plan.terms);
+    return await this.sql.unsafe(POWER_SEARCH_SQL, [
+      tsquery,
+      toPgTextArray(targetPatterns),
+      toPgTextArray(plan.instruments),
+      plan.domain.filter((d) => d.trim() !== "").join("|"),
+      plan.modality,
+      plan.actor,
+      plan.directionOnly,
+      plan.withConditionsOnly,
+      plan.legislationKind,
+      plan.limit,
+    ]);
+  }
 }
 
 function _filesSql(whereClause: string): string {
@@ -294,4 +466,5 @@ function _filesSql(whereClause: string): string {
     where ${whereClause}
     order by df.is_canonical desc, df.file_kind, df.id
   `;
+
 }

@@ -4,6 +4,7 @@
   "main": "src/index.tsx",
   "compatibility_date": "2026-06-01",
   "observability": { "enabled": true },
+  "dev": { "port": 3000 },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
